@@ -4,7 +4,7 @@ Evaluates both reference policies on every task and eval set with the fixed
 seed lists and writes ``<out>/reference_baselines.csv`` and ``.md``.
 
 Usage:
-    python scripts/reference_baselines.py --n-episodes 500
+    python -m babytext.tools.reference_baselines --n-episodes 500
 """
 
 from __future__ import annotations
@@ -15,11 +15,13 @@ from pathlib import Path
 
 from babytext import EVAL_SETS, TASKS, ExpertPolicy, RandomPolicy, evaluate
 
+import config
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--n-episodes", type=int, default=500)
-    parser.add_argument("--out", type=Path, default=Path("outputs/results"))
+    parser.add_argument("--n-episodes", type=int, default=config.EVAL.n_episodes)
+    parser.add_argument("--out", type=Path, default=config.DATA.outputs_dir / "results")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 

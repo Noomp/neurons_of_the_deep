@@ -1,15 +1,16 @@
 """Collect expert demonstrations for behaviour cloning.
 
 Writes, for each task and split, ``<out>/<task>_<split>.jsonl`` and ``.npz``
-(see ``babytext.data``) plus ``<out>/summary.json``.
+(see ``babytext.data``) plus ``<out>/summary.json``, which also records the
+full ``babytext.config`` used, so every dataset says how it was generated.
 
 Episodes use the first N seeds of each split, so a smaller training set
 (for demonstration-count learning curves) is just a prefix of a larger one:
 take the first k episodes of ``goto_train.jsonl``.
 
 Usage:
-    python scripts/collect_demos.py                      # 2000 train / 200 val per task
-    python scripts/collect_demos.py --n-train 500 --tasks goto
+    python -m babytext.tools.collect_demos                      # counts from config.DATA
+    python -m babytext.tools.collect_demos --n-train 500 --tasks goto
 """
 
 from __future__ import annotations
@@ -23,13 +24,15 @@ from tqdm import tqdm
 from babytext import TASKS, ExpertPolicy, get_seeds, make_env, run_episode
 from babytext.data import save_demos
 
+import config
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tasks", nargs="+", default=list(TASKS), choices=TASKS)
-    parser.add_argument("--n-train", type=int, default=2000, help="training episodes per task")
-    parser.add_argument("--n-val", type=int, default=200, help="validation episodes per task")
-    parser.add_argument("--out", type=Path, default=Path("data/demos"))
+    parser.add_argument("--n-train", type=int, default=config.DATA.n_train_demos, help="training episodes per task")
+    parser.add_argument("--n-val", type=int, default=config.DATA.n_val_demos, help="validation episodes per task")
+    parser.add_argument("--out", type=Path, default=config.DATA.demos_dir)
     args = parser.parse_args()
 
     summary = {}
@@ -58,7 +61,7 @@ def main():
 
     args.out.mkdir(parents=True, exist_ok=True)
     with open(args.out / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump({"datasets": summary, "config": config.as_dict()}, f, indent=2)
 
 
 if __name__ == "__main__":

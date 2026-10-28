@@ -2,14 +2,19 @@
 
 Every frame shows three views of the same state side by side:
 
-1. the full room, with the agent's 7x7 field of view highlighted and the goal
-   object(s) outlined in white;
+1. the full room, with the agent's 7x7 field of view highlighted and the
+   instruction objects outlined in white (first object solid, second dashed,
+   e.g. "put the <solid> next to the <dashed>");
 2. the agent's egocentric view (what ``obs["image"]`` encodes);
 3. the text the language model receives: mission, descriptions and the
    action chosen at this step (optionally the full GLAM prompt).
 
 Episodes are reproduced by replaying ``(task, eval_set, seed, actions)``, so
 any saved demonstration or evaluation episode can be rendered after the fact.
+
+Figures are drawn off-screen on standalone matplotlib ``Figure`` objects (not
+pyplot), so importing this module never changes your matplotlib backend. To
+look at a frame interactively: ``plt.imshow(fig_to_array(draw_frame(frame)))``.
 """
 
 from __future__ import annotations
@@ -18,16 +23,14 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib
+import numpy as np
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
+from PIL import Image
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from matplotlib.patches import Rectangle  # noqa: E402
-from PIL import Image  # noqa: E402
-
-from .constants import ACTION_NAMES  # noqa: E402
-from .splits import make_env  # noqa: E402
+from .constants import ACTION_NAMES
+from .splits import make_env
 
 TILE = 32  # pixels per grid cell
 
@@ -48,11 +51,23 @@ class Frame:
     mission: str
     descriptions: list[str]
     prompt: str
-    goal_positions: list[tuple[int, int]]
+    goal_positions: list[list[tuple[int, int]]]  # per instruction object
     action: int | None  # action taken from this state (None at the final state)
     reward: float  # reward received on entering this state
     done: bool
     success: bool
+
+
+def outline_goals(ax, goal_positions, linewidth: float = 2.5):
+    """Outline instruction objects: first object solid, second dashed."""
+    for k, positions in enumerate(goal_positions):
+        for x, y in positions:
+            ax.add_patch(
+                Rectangle(
+                    (x * TILE + 1.5, y * TILE + 1.5), TILE - 3, TILE - 3, fill=False,
+                    edgecolor="white", linewidth=linewidth, linestyle="-" if k == 0 else (0, (2, 1.5)),
+                )
+            )
 
 
 def capture(env, obs, info, action=None, reward=0.0, done=False) -> Frame:
@@ -65,7 +80,7 @@ def capture(env, obs, info, action=None, reward=0.0, done=False) -> Frame:
         mission=obs["mission"],
         descriptions=list(obs["descriptions"]),
         prompt=obs["prompt"],
-        goal_positions=list(info["goal_positions"]),
+        goal_positions=[list(p) for p in info["goal_positions"]],
         action=action,
         reward=reward,
         done=done,
@@ -94,18 +109,16 @@ def _wrap(lines: list[str], width: int) -> str:
     return "\n".join(textwrap.fill(line, width, subsequent_indent="   ") for line in lines)
 
 
-def draw_frame(frame: Frame, title: str = "", show_prompt: bool = False) -> plt.Figure:
+def draw_frame(frame: Frame, title: str = "", show_prompt: bool = False) -> Figure:
     """Draw one state as a figure (room | agent view | text)."""
-    fig = plt.figure(figsize=(14, 5.6), dpi=100, facecolor=SURFACE)
+    fig = Figure(figsize=(14, 5.6), dpi=100, facecolor=SURFACE)
+    FigureCanvasAgg(fig)
     grid = fig.add_gridspec(1, 3, width_ratios=[1, 0.9, 1.6], wspace=0.06, left=0.01, right=0.99, top=0.88, bottom=0.02)
 
     ax_full = fig.add_subplot(grid[0])
     ax_full.imshow(frame.full)
-    for x, y in frame.goal_positions:
-        ax_full.add_patch(
-            Rectangle((x * TILE + 1.5, y * TILE + 1.5), TILE - 3, TILE - 3, fill=False, edgecolor="white", linewidth=2.5)
-        )
-    ax_full.set_title("Room (field of view highlighted, goal outlined)", fontsize=9, color=INK_SECONDARY)
+    outline_goals(ax_full, frame.goal_positions)
+    ax_full.set_title("Room (field of view highlighted, goal objects outlined)", fontsize=9, color=INK_SECONDARY)
 
     ax_pov = fig.add_subplot(grid[1])
     ax_pov.imshow(frame.pov)
@@ -141,10 +154,9 @@ def draw_frame(frame: Frame, title: str = "", show_prompt: bool = False) -> plt.
     return fig
 
 
-def fig_to_array(fig: plt.Figure) -> np.ndarray:
+def fig_to_array(fig: Figure) -> np.ndarray:
     fig.canvas.draw()
     img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
-    plt.close(fig)
     return img
 
 
@@ -167,13 +179,14 @@ def save_strip(frames: list[Frame], path: str | Path, title: str = "", max_frame
         frames = [frames[i] for i in idx]
     ncols = min(ncols, len(frames))
     nrows = int(np.ceil(len(frames) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(2.3 * ncols, 2.6 * nrows + 0.5), facecolor=SURFACE, squeeze=False)
+    fig = Figure(figsize=(2.3 * ncols, 2.6 * nrows + 0.5), facecolor=SURFACE)
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(nrows, ncols, squeeze=False)
     for ax in axes.flat:
         ax.axis("off")
     for ax, f in zip(axes.flat, frames):
         ax.imshow(f.full)
-        for x, y in f.goal_positions:
-            ax.add_patch(Rectangle((x * TILE + 1.5, y * TILE + 1.5), TILE - 3, TILE - 3, fill=False, edgecolor="white", linewidth=1.5))
+        outline_goals(ax, f.goal_positions, linewidth=1.5)
         if f.action is not None:
             label, color = f"t={f.t}: {ACTION_NAMES[f.action]}", INK
         else:
@@ -183,5 +196,4 @@ def save_strip(frames: list[Frame], path: str | Path, title: str = "", max_frame
         fig.suptitle(title, fontsize=11, color=INK, x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(path, dpi=120, facecolor=SURFACE)
-    plt.close(fig)
     return path

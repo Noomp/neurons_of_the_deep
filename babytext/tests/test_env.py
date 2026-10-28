@@ -3,6 +3,7 @@
 Run with ``python -m pytest`` from the repository root.
 """
 
+import re
 from collections import deque
 
 import numpy as np
@@ -12,8 +13,9 @@ from minigrid.core.world_object import Ball
 
 from babytext import (
     ACTION_NAMES,
+    ACTION_TO_IDX,
     EVAL_SETS,
-    HELD_OUT_GOALS,
+    DisappearedBoxError,
     TASKS,
     ExpertPolicy,
     RandomPolicy,
@@ -24,7 +26,10 @@ from babytext import (
     make_env,
     run_episode,
 )
-from babytext.constants import NONCE_WORDS
+from config import ENV
+from babytext.constants import TASK_NUM_OBJECTS
+
+HELD_OUT_GOALS = ENV.held_out_goals
 from babytext.data import load_episodes, load_steps, load_symbolic, save_demos
 
 
@@ -47,7 +52,7 @@ def test_descriptions_match_glam(task, eval_set):
             n_carry += env.unwrapped.carrying is not None
             obs, _, term, trunc, _ = env.step(policy(obs))
             done = term or trunc
-    if task == "goto":  # pickup ends as soon as the goal is picked up
+    if task != "pickup":  # pickup ends as soon as the goal is picked up
         assert n_carry > 0, "no carrying states were exercised"
 
 
@@ -121,23 +126,79 @@ def test_expert_solves_every_eval_set(task, eval_set):
     assert all(set(e.actions) <= set(range(len(ACTION_NAMES))) for e in result["episodes"])
 
 
+def _instr_objects(task, eval_set, n):
+    env = make_env(task, eval_set)
+    return [env.reset(seed=s)[1]["goal"] for s in get_seeds(task, eval_set, n)]
+
+
 @pytest.mark.parametrize("task", TASKS)
 def test_goal_pools(task):
+    """In-distribution instructions never name a held-out object; in test_heldout
+    exactly one instruction object is held out."""
     for eval_set in ("train", "val", "test", "test_dist16", "test_nonce"):
-        goals = {e.goal for e in evaluate(RandomPolicy(0), task, eval_set, 300)["episodes"]}
-        assert not goals & HELD_OUT_GOALS, eval_set
-        assert len(goals) == 18 - len(HELD_OUT_GOALS)
-    held = {e.goal for e in evaluate(RandomPolicy(0), task, "test_heldout", 100)["episodes"]}
-    assert held == set(HELD_OUT_GOALS)
+        goals = _instr_objects(task, eval_set, 300)
+        assert all(len(g) == TASK_NUM_OBJECTS[task] for g in goals)
+        named = {obj for g in goals for obj in g}
+        assert not named & HELD_OUT_GOALS, eval_set
+        assert len(named) == 18 - len(HELD_OUT_GOALS)
+    goals = _instr_objects(task, "test_heldout", 100)
+    assert all(sum(obj in HELD_OUT_GOALS for obj in g) == 1 for g in goals)
+    assert {obj for g in goals for obj in g if obj in HELD_OUT_GOALS} == set(HELD_OUT_GOALS)
 
 
-@pytest.mark.parametrize("eval_set,expected", [("train", 9), ("test_dist16", 17)])
-def test_object_count(eval_set, expected):
-    env = make_env("goto", eval_set)
-    for seed in get_seeds("goto", eval_set, 20):
-        env.reset(seed=seed)
+@pytest.mark.parametrize("task", ["putnext", "pickup_then_goto"])
+def test_two_object_tasks_name_different_objects(task):
+    assert all(a != b for a, b in _instr_objects(task, "train", 200))
+
+
+@pytest.mark.parametrize("task", TASKS)
+@pytest.mark.parametrize("eval_set", ["train", "test_dist16"])
+def test_object_count(task, eval_set):
+    expected = EVAL_SETS[eval_set].level_kwargs()["num_dists"] + TASK_NUM_OBJECTS[task]
+    env = make_env(task, eval_set)
+    for seed in get_seeds(task, eval_set, 20):
+        _, info = env.reset(seed=seed)
         objs = [c for c in env.unwrapped.grid.grid if c is not None and c.type != "wall"]
         assert len(objs) == expected
+        assert all(len(p) > 0 for p in info["goal_positions"])  # every named object is on the floor
+
+
+@pytest.mark.parametrize(
+    "task,pattern",
+    [
+        ("goto", r"^go to (the|a) \w+ \w+$"),
+        ("pickup", r"^pick up (the|a) \w+ \w+$"),
+        ("putnext", r"^put (the|a) \w+ \w+ next to (the|a) \w+ \w+$"),
+        ("pickup_then_goto", r"^pick up (the|a) \w+ \w+, then go to (the|a) \w+ \w+$"),
+    ],
+)
+def test_mission_format(task, pattern):
+    env = make_env(task, "train")
+    for seed in get_seeds(task, "train", 20):
+        obs, _ = env.reset(seed=seed)
+        assert re.match(pattern, obs["mission"]), obs["mission"]
+
+
+def test_seed_layout_is_stable():
+    """Seed ranges must not move when tasks are added (data would silently change)."""
+    assert get_seeds("goto", "train", 1) == [0]
+    assert get_seeds("pickup", "train", 1) == [1_000_000]
+    assert get_seeds("goto", "val", 1) == [10_000_000]
+    assert get_seeds("pickup_then_goto", "test_nonce", 1) == [23_000_000]
+
+
+def test_expert_keeps_carrying_in_pickup_then_goto():
+    """The expert must not drop the picked-up object (see ExpertPolicy), so the
+    prompt always shows whether the first half of the task is done."""
+    result = evaluate(ExpertPolicy(), "pickup_then_goto", "train", 100)
+    after_pickup = carrying = 0
+    for ep in result["episodes"]:
+        first = ep.actions.index(ACTION_TO_IDX["pick up"])
+        assert ep.actions[first + 1] != ACTION_TO_IDX["drop"]
+        for step in ep.steps[first + 1 :]:
+            after_pickup += 1
+            carrying += step.descriptions[0].startswith("You carry")
+    assert carrying / after_pickup > 0.95
 
 
 def test_determinism():
@@ -149,12 +210,13 @@ def test_determinism():
         assert [s.prompt for s in a.steps] == [s.prompt for s in b.steps]
 
 
-def test_nonce_renaming():
+@pytest.mark.parametrize("task", TASKS)
+def test_nonce_renaming(task):
     """test_nonce has the same layout as test, and no real colour/object word survives."""
-    real_words = set(NONCE_WORDS)
-    for seed in get_seeds("goto", "test", 20):
-        a = run_episode(make_env("goto", "test"), ExpertPolicy(), seed)
-        b = run_episode(make_env("goto", "test_nonce"), ExpertPolicy(), seed)
+    real_words = set(ENV.nonce_words)
+    for seed in get_seeds(task, "test", 20):
+        a = run_episode(make_env(task, "test"), ExpertPolicy(), seed)
+        b = run_episode(make_env(task, "test_nonce"), ExpertPolicy(), seed)
         assert a.actions == b.actions
         assert b.mission == Renamer()(a.mission)
         for step in b.steps:
@@ -194,3 +256,59 @@ def test_save_load_roundtrip(tmp_path):
     flat = [s for e in episodes for s in e.steps]
     assert all(np.array_equal(s.image, img) for s, img in zip(flat, arrays["image"]))
     assert [r["prompt"] for r in steps] == [s.prompt for s in flat]
+
+
+# --- expert relabelling (DAgger) -------------------------------------------------
+
+
+def _mixed_rollout(task, seed, eps, allow_toggle, rng):
+    """Expert labels every step; with probability eps a random action is executed
+    instead and reported back via action_taken. Returns True on success."""
+    env = make_env(task, "train")
+    obs, _ = env.reset(seed=seed)
+    expert = ExpertPolicy()
+    expert.reset(env)
+    prev = None
+    while True:
+        action = expert(obs, action_taken=prev)
+        if rng.random() < eps:
+            action = int(rng.integers(len(ACTION_NAMES) if allow_toggle else ACTION_TO_IDX["toggle"]))
+        obs, reward, term, trunc, _ = env.step(action)
+        prev = action
+        if term or trunc:
+            return term and reward > 0
+
+
+@pytest.mark.parametrize("task", TASKS)
+def test_expert_relabels_off_policy_states(task):
+    """Told what was actually executed, the expert recovers from every deviation."""
+    rng = np.random.default_rng(0)
+    assert all(_mixed_rollout(task, s, 0.3, False, rng) for s in get_seeds(task, "train", 50))
+
+
+@pytest.mark.parametrize("task", TASKS)
+def test_expert_only_gives_up_when_a_box_is_opened(task):
+    rng = np.random.default_rng(1)
+    for seed in get_seeds(task, "train", 50):
+        try:
+            assert _mixed_rollout(task, seed, 0.3, True, rng)
+        except DisappearedBoxError:
+            pass
+
+
+@pytest.mark.parametrize("task", TASKS)
+def test_action_taken_matches_demos_when_expert_is_followed(task):
+    """Reporting the expert's own actions back changes nothing."""
+    env = make_env(task, "train")
+    for seed in get_seeds(task, "train", 20):
+        demo = run_episode(env, ExpertPolicy(), seed).actions
+        obs, _ = env.reset(seed=seed)
+        expert = ExpertPolicy()
+        expert.reset(env)
+        actions, prev, done = [], None, False
+        while not done:
+            prev = expert(obs, action_taken=prev)
+            actions.append(prev)
+            obs, _, term, trunc, _ = env.step(prev)
+            done = term or trunc
+        assert actions == demo

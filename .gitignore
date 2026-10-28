@@ -1,5 +1,7 @@
 .git/
 .vscode/
+*temp*
+*tmp*
 
 # Python
 __pycache__/
@@ -7,6 +9,6 @@ __pycache__/
 build/
 .pytest_cache/
 
-# Regenerable artefacts (see README: collect_demos.py, dataset_stats.py, ...)
+# Regenerable artefacts (see babytext/README.md: babytext.tools.collect_demos, ...)
 data/
 outputs/

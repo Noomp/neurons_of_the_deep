@@ -32,7 +32,7 @@ def save_demos(episodes: list[Episode], prefix: str | Path) -> None:
                 "eval_set": ep.eval_set,
                 "seed": ep.seed,
                 "mission": ep.mission,
-                "goal": list(ep.goal),
+                "goal": [list(g) for g in ep.goal],
                 "success": ep.success,
                 "reward": ep.reward,
                 "length": ep.length,

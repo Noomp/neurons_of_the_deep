@@ -9,26 +9,29 @@ Quick start::
     print(obs["prompt"])
 """
 
-from .constants import ACTION_NAMES, ACTION_TO_IDX, HELD_OUT_GOALS, NUM_ACTIONS, TASKS
-from .policies import ExpertPolicy, RandomPolicy
+import config
+from config import EVAL_SETS
+from .constants import ACTION_NAMES, ACTION_TO_IDX, NUM_ACTIONS, TASKS
+from .policies import DisappearedBoxError, ExpertPolicy, RandomPolicy
 from .prompt import PromptHistory, glam_prompt
 from .rollout import Episode, Step, evaluate, run_episode
-from .splits import EVAL_SETS, get_seeds, make_env
+from .splits import get_seeds, make_env
 from .text import Renamer, describe
 
 __all__ = [
     "ACTION_NAMES",
     "ACTION_TO_IDX",
+    "DisappearedBoxError",
     "EVAL_SETS",
     "Episode",
     "ExpertPolicy",
-    "HELD_OUT_GOALS",
     "NUM_ACTIONS",
     "PromptHistory",
     "RandomPolicy",
     "Renamer",
     "Step",
     "TASKS",
+    "config",
     "describe",
     "evaluate",
     "get_seeds",

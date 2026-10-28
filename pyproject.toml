@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "babytext"
+name = "sc4001-grp-proj"
 version = "0.1.0"
-description = "Minimal BabyAI-Text environment on Farama MiniGrid (SC4001 group project)"
+description = "SC4001 group project: action heads on frozen LLMs in a BabyAI-Text-style gridworld"
 requires-python = ">=3.10"
 dependencies = [
     "minigrid>=3.0",
@@ -18,9 +18,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pygame-ce"]
+# PyTorch is installed with conda (pytorch-gpu) in the neurons env; see environment.yml.
+models = ["torch>=2.4"]
 
 [tool.setuptools]
-packages = ["babytext"]
+# babytext: the environment (with its tools); models: experiment code.
+packages = ["babytext", "babytext.tools", "models"]
+# Root-level config.py (all project settings) is importable as `config`.
+py-modules = ["config"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Environment tests live with the environment; experiment tests in tests/.
+testpaths = ["babytext/tests", "tests"]

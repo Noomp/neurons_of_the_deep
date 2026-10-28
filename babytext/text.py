@@ -26,7 +26,7 @@ import re
 import numpy as np
 from minigrid.core.constants import COLOR_TO_IDX, OBJECT_TO_IDX
 
-from .constants import NONCE_WORDS
+from config import ENV
 
 IDX_TO_COLOR = {v: k for k, v in COLOR_TO_IDX.items()}
 IDX_TO_OBJECT = {v: k for k, v in OBJECT_TO_IDX.items()}
@@ -102,7 +102,7 @@ class Renamer:
     """
 
     def __init__(self, mapping: dict[str, str] | None = None):
-        self.mapping = dict(NONCE_WORDS if mapping is None else mapping)
+        self.mapping = dict(ENV.nonce_words if mapping is None else mapping)
         words = sorted(self.mapping, key=len, reverse=True)
         self._pattern = re.compile(r"\b(" + "|".join(map(re.escape, words)) + r")\b")
 

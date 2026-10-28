@@ -6,7 +6,7 @@ Keys: left/right = turn, up = forward, tab or pageup = pick up,
       backspace = restart episode, n = next seed, escape = quit.
 
 Usage:
-    python scripts/play.py --task pickup --eval-set test_nonce --prompt
+    python -m babytext.tools.play --task pickup --eval-set test_nonce --prompt
 """
 
 from __future__ import annotations

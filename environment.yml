@@ -1,12 +1,15 @@
 # conda env create -f environment.yml && conda activate neurons && pip install -e .
-# Model-side packages (torch, transformers, ...) are not included yet; add them
-# here once the team settles on versions for their GPU / CUDA setup.
+# Always run inside the activated env (or `conda run -n neurons ...`): the conda
+# PyTorch build loads its DLLs from the env's Library/bin, which is only on the
+# search path when the env is active.
+# transformers etc. for the LLM side are not included yet.
 name: neurons
 channels:
   - defaults
 dependencies:
   - python=3.11
   - pip
+  - pytorch-gpu=2.14.1  # CUDA 13.0 build (RTX 5080)
   - pip:
       - minigrid==3.2.0
       - gymnasium==1.4.0

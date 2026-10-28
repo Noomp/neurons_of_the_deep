@@ -5,13 +5,13 @@ from a saved demonstration file.
 
 Usage:
     # fresh rollout with the expert on the 4th test seed of "pick up"
-    python scripts/visualise_episode.py --task pickup --eval-set test --seed-index 3
+    python -m babytext.tools.visualise_episode --task pickup --eval-set test --seed-index 3
 
     # random agent on the 16-distractor shift, with the full GLAM prompt shown
-    python scripts/visualise_episode.py --task goto --eval-set test_dist16 --policy random --show-prompt
+    python -m babytext.tools.visualise_episode --task goto --eval-set test_dist16 --policy random --show-prompt
 
     # replay episode 10 of a saved demonstration file
-    python scripts/visualise_episode.py --demos data/demos/goto_train --episode 10
+    python -m babytext.tools.visualise_episode --demos data/demos/goto_train --episode 10
 """
 
 from __future__ import annotations
@@ -19,9 +19,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from babytext import TASKS, EVAL_SETS, ExpertPolicy, RandomPolicy, get_seeds, make_env, run_episode
+from babytext import EVAL_SETS, TASKS, ExpertPolicy, RandomPolicy, get_seeds, make_env, run_episode
 from babytext.data import load_episodes
 from babytext.viz import replay, save_gif, save_strip
+
+import config
 
 
 def main():
@@ -34,7 +36,7 @@ def main():
     parser.add_argument("--episode", type=int, default=0, help="episode index in --demos")
     parser.add_argument("--show-prompt", action="store_true", help="show the full GLAM prompt instead of the descriptions")
     parser.add_argument("--fps", type=float, default=2.0)
-    parser.add_argument("--out", type=Path, default=Path("outputs/episodes"))
+    parser.add_argument("--out", type=Path, default=config.DATA.outputs_dir / "episodes")
     args = parser.parse_args()
 
     if args.demos:

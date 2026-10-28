@@ -21,7 +21,8 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 
-from .constants import ACTION_NAMES, PROMPT_NUM_OBS
+from config import ENV
+from .constants import ACTION_NAMES
 
 
 def glam_prompt(
@@ -52,8 +53,8 @@ def glam_prompt(
 class PromptHistory:
     """Rolling window of observations and actions, as kept by GLAM's agent."""
 
-    def __init__(self, num_obs: int = PROMPT_NUM_OBS):
-        self.num_obs = num_obs
+    def __init__(self, num_obs: int | None = None):
+        self.num_obs = ENV.prompt_num_obs if num_obs is None else num_obs
         self.reset()
 
     def reset(self):

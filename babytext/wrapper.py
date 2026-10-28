@@ -9,6 +9,11 @@ Observations are dicts with both views of the same state:
 * ``prompt``: GLAM prompt built from the last 3 observations and 2 actions.
 
 The action space is ``Discrete(6)`` (see ``constants.ACTION_NAMES``).
+
+``info`` adds ``goal``, the (type, colour) of each object named in the
+instruction in mission order (one for goto/pickup, two for putnext and
+pickup_then_goto), and ``goal_positions``, one list per instruction object of
+the matching objects' current grid positions (carried objects are not listed).
 """
 
 from __future__ import annotations
@@ -18,6 +23,16 @@ import gymnasium as gym
 from .constants import ACTION_NAMES, NUM_ACTIONS
 from .prompt import PromptHistory
 from .text import Renamer, describe
+
+
+def matching_positions(level, kind: str, color: str) -> list[tuple[int, int]]:
+    """Grid positions of all objects currently on the floor matching (kind, color)."""
+    return [
+        (i, j)
+        for j in range(level.grid.height)
+        for i in range(level.grid.width)
+        if (cell := level.grid.get(i, j)) is not None and cell.type == kind and cell.color == color
+    ]
 
 
 class TextEnv(gym.Wrapper):
@@ -46,10 +61,9 @@ class TextEnv(gym.Wrapper):
 
     def _info(self, info: dict) -> dict:
         level = self.env.unwrapped
-        desc = level.instrs.desc
         info = dict(info)
-        info["goal"] = (desc.type, desc.color)
-        info["goal_positions"] = [tuple(int(v) for v in p) for p in desc.obj_poss]
+        info["goal"] = level.instr_objects
+        info["goal_positions"] = [matching_positions(level, kind, color) for kind, color in level.instr_objects]
         return info
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):

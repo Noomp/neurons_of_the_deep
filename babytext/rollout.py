@@ -30,7 +30,7 @@ class Episode:
     eval_set: str
     seed: int
     mission: str
-    goal: tuple[str, str]  # (type, colour) before any renaming
+    goal: tuple[tuple[str, str], ...]  # (type, colour) per instruction object, before renaming
     steps: list[Step] = field(default_factory=list)
     reward: float = 0.0
     success: bool = False
