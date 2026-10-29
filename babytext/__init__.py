@@ -1,5 +1,21 @@
 """babytext: a minimal BabyAI-Text re-implementation on Farama MiniGrid.
 
+This is the environment section of the project and imports nothing from
+``models`` or ``training``. Other code may use:
+
+* the names in ``__all__`` below (environments, seeds, actions, policies,
+  rollout / evaluation, text helpers);
+* ``babytext.data``: ``save_demos``, ``load_episodes``, ``load_steps``,
+  ``load_symbolic`` (the demonstration file format);
+* ``babytext.viz``: ``replay``, ``capture``, ``draw_frame``, ``save_gif``,
+  ``save_strip``, ``outline_goals``, ``Frame`` and the colour tokens
+  (imported separately because it switches matplotlib to the Agg backend);
+* ``babytext.constants``: the fixed vocabulary (``TASK_TIERS``,
+  ``TASK_NUM_OBJECTS``, ``COLORS``, ``OBJ_TYPES``).
+
+Everything else (``levels``, ``wrapper``, ``text``, ``splits`` internals,
+names starting with ``_``) is an implementation detail.
+
 Quick start::
 
     from babytext import make_env, get_seeds, ExpertPolicy, run_episode

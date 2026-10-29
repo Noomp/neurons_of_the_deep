@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sc4001-grp-proj"
 version = "0.1.0"
-description = "SC4001 group project: action heads on frozen LLMs in a BabyAI-Text-style gridworld"
+description = "SC4001 group project: a small language model with spatio-temporal memory as a BabyAI-Text gridworld policy"
 requires-python = ">=3.10"
 dependencies = [
     "minigrid>=3.0",
@@ -18,15 +18,20 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pygame-ce"]
-# PyTorch is installed with conda (pytorch-gpu) in the neurons env; see environment.yml.
-models = ["torch>=2.4"]
+# Model dependencies. With conda, PyTorch comes from environment.yml (pytorch-gpu) and
+# `pip install -e ".[models]"` only adds transformers; with a venv, this extra installs both.
+models = ["torch>=2.4", "transformers>=4.51"]
 
 [tool.setuptools]
-# babytext: the environment (with its tools); models: experiment code.
-packages = ["babytext", "babytext.tools", "models"]
+# babytext: the environment (with its tools); models: the policies; training: datasets and training.
+packages = ["babytext", "babytext.tools", "models", "training", "training.tools"]
 # Root-level config.py (all project settings) is importable as `config`.
 py-modules = ["config"]
 
 [tool.pytest.ini_options]
 # Environment tests live with the environment; experiment tests in tests/.
 testpaths = ["babytext/tests", "tests"]
+
+[tool.uv]
+# Keep uv.lock (and requirements.txt, exported from it) on the same pins as environment.yml.
+constraint-dependencies = ["pytest==9.1.1"]

@@ -15,8 +15,8 @@ instance that the code reads:
 * ``SYMBOLIC``: sizes of the B3 symbolic agent.
 
 Changing ``ENV`` or ``EVAL_SETS`` changes the generated episodes: re-run
-``python -m babytext.tools.collect_demos`` (and any hidden-state caching) afterwards.
-``babytext.tools.collect_demos`` stores ``as_dict()`` next to the demos so every dataset
+``python -m training.tools.collect_demos`` (and any hidden-state caching) afterwards.
+``training.tools.collect_demos`` stores ``as_dict()`` next to the demos so every dataset
 records the settings that produced it.
 
 One-off overrides do not need edits here, e.g.

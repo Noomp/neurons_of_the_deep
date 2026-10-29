@@ -36,6 +36,8 @@ from torch.nn.utils.rnn import pack_padded_sequence
 from babytext.constants import COLORS, NUM_ACTIONS, OBJ_TYPES
 from config import ENV, SYMBOLIC, SymbolicAgentConfig
 
+__all__ = ["NO_ACTION", "MissionTokenizer", "SymbolicAgent", "SymbolicHistory", "SymbolicPolicy", "stack_demo_steps"]
+
 NO_ACTION = NUM_ACTIONS # represents `no-action`, used as `previous-action` at the start of episodes
 
 

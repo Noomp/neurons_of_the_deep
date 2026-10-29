@@ -9,8 +9,8 @@ Writes to ``--out``:
 * ``demo_stats.json`` / ``eval_set_stats.csv``: the numbers behind the charts.
 
 Usage:
-    python -m babytext.tools.collect_demos          # first
-    python -m babytext.tools.dataset_stats
+    python -m training.tools.collect_demos          # first
+    python -m training.tools.dataset_stats
 """
 
 from __future__ import annotations

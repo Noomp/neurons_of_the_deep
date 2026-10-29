@@ -9,8 +9,8 @@ Episodes use the first N seeds of each split, so a smaller training set
 take the first k episodes of ``goto_train.jsonl``.
 
 Usage:
-    python -m babytext.tools.collect_demos                      # counts from config.DATA
-    python -m babytext.tools.collect_demos --n-train 500 --tasks goto
+    python -m training.tools.collect_demos                      # counts from config.DATA
+    python -m training.tools.collect_demos --n-train 500 --tasks goto
 """
 
 from __future__ import annotations
