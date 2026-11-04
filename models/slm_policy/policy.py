@@ -69,7 +69,7 @@ class SLMPolicy(nn.Module):
         d, v = cfg.feature_dim, ENV.agent_view_size
         self.num_cells = v * v
         self.time = TimeEncoding(d)
-        self.encoder = ViewEncoder(d, cfg.num_conv_layers, v, self.time)
+        self.encoder = ViewEncoder(d, cfg.num_conv_layers, v, self.time, cfg.use_direction)
         self.mission = MissionEncoder(cfg.word_dim, cfg.mission_dim)
         self.memory = SlotMemory(d, cfg.mission_dim, cfg.memory_slots, cfg.write_gate_bias, cfg.write_mode)
         self.attention = SpaceTimeAttention(d, cfg.mission_dim, cfg.read_heads, v, self.time)
@@ -161,6 +161,8 @@ def parameter_groups(model: SLMPolicy) -> dict[str, list[nn.Parameter]]:
 def save_model(model: SLMPolicy, path: str | Path, **extra) -> None:
     """Save the config and every weight except the frozen pretrained SLM.
 
+    A random SLM (``slm_pretrained = False``) is not stored either: its
+    fingerprint is, so ``load_model`` can check the regenerated weights.
     ``extra`` (e.g. stage, step, validation score) is stored alongside and
     returned by ``load_checkpoint_info``.
     """
@@ -168,7 +170,15 @@ def save_model(model: SLMPolicy, path: str | Path, **extra) -> None:
     state = {k: v for k, v in model.state_dict().items() if k not in skip}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"config": asdict(model.cfg), "state_dict": state, "extra": extra}, path)
+    torch.save(
+        {
+            "config": asdict(model.cfg),
+            "state_dict": state,
+            "extra": extra,
+            "lm_fingerprint": model.backbone.regenerated_fingerprint(),
+        },
+        path,
+    )
 
 
 def load_checkpoint_info(path: str | Path) -> dict:
@@ -182,7 +192,13 @@ def load_model(path: str | Path, backbone_module: Backbone | None = None, **over
     Pass config overrides to move to the next training stage, e.g.
     ``load_model("m1.pt", backbone="slm")``. When the backbone type changes,
     the backbone and the heads start fresh and everything else (encoder,
-    mission, memory, attention) is loaded.
+    mission, memory, attention) is loaded. The model's config is the saved
+    one plus ``overrides``; ``config.SLM`` is not read.
+
+    Raises:
+        RuntimeError: weights are missing or unexpected, or a random SLM
+            regenerated with different weights than it was trained with
+            (e.g. after a torch / transformers upgrade).
 
     Args:
         path: file written by ``save_model``.
@@ -193,6 +209,7 @@ def load_model(path: str | Path, backbone_module: Backbone | None = None, **over
     saved = ckpt["config"]
     names = {f.name for f in fields(SLMPolicyConfig)}
     merged = {k: tuple(v) if isinstance(v, list) else v for k, v in saved.items() if k in names}
+    merged.setdefault("use_direction", True)  # checkpoints from before the field always used the heading
     unknown = set(overrides) - names
     if unknown:
         raise ValueError(f"unknown config fields: {sorted(unknown)}")
@@ -212,4 +229,10 @@ def load_model(path: str | Path, backbone_module: Backbone | None = None, **over
         bad = [k for k in missing if k not in allowed]
         if bad:
             raise RuntimeError(f"checkpoint is missing weights: {bad}")
+        expected = ckpt.get("lm_fingerprint")
+        if expected is not None and model.backbone.regenerated_fingerprint() != expected:
+            raise RuntimeError(
+                "the random SLM did not regenerate to the weights this checkpoint was trained with "
+                "(different slm_init_seed or slm_name, or a different torch / transformers version)"
+            )
     return model

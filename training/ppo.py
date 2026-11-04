@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from config import PPO, PPOConfig
-from models.slm_policy import MemoryState, Observations, SLMPolicy, observations_from_env, save_model
+from models.slm_policy import MemoryState, Observations, SLMAgentPolicy, SLMPolicy, observations_from_env, save_model
 
 from .common import RunLogger, validate
 from .rewards import compute_gae
@@ -189,7 +189,8 @@ def train_ppo(
         stats.update(ppo_update(model, optimizer, rollout, cfg))
         stats["env_steps"] = update * cfg.num_envs * cfg.rollout_len
         if update % cfg.val_every == 0 or update == num_updates:
-            stats.update(validate(model, tasks, cfg.val_episodes, device))
+            stats.update(validate(SLMAgentPolicy(model, device=device, greedy=True), tasks, cfg.val_episodes))
+            model.train()
             save_model(model, out_dir / "last.pt", stage=stage.number, update=update, **stats)
             if stats["val_success"] > best:
                 best = stats["val_success"]

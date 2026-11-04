@@ -42,18 +42,19 @@ class ViewEncoder(nn.Module):
     Each cell's (object, colour, state) codes are embedded and summed with a
     learned embedding of the cell's position (the view is egocentric, so
     "2 cells in front of me" is a fixed position). Residual 3x3 convolutions
-    then mix neighbouring cells. Direction and the time encoding of t are
+    then mix neighbouring cells. The time encoding of t, and the heading if
+    ``use_direction`` is True (off by default, as B3 gets no heading), are
     added to every cell.
     """
 
-    def __init__(self, dim: int, num_layers: int, view_size: int, time: TimeEncoding):
+    def __init__(self, dim: int, num_layers: int, view_size: int, time: TimeEncoding, use_direction: bool = False):
         super().__init__()
         self.view_size = view_size
         self.obj_emb = nn.Embedding(len(OBJECT_TO_IDX), dim)
         self.color_emb = nn.Embedding(len(COLOR_TO_IDX), dim)
         self.state_emb = nn.Embedding(3, dim)
         self.cell_pos = nn.Parameter(torch.zeros(view_size * view_size, dim))
-        self.direction_emb = nn.Embedding(4, dim)
+        self.direction_emb = nn.Embedding(4, dim) if use_direction else None
         self.convs = nn.ModuleList(nn.Conv2d(dim, dim, 3, padding=1) for _ in range(num_layers))
         self.norm = nn.LayerNorm(dim)
         self.time = time
@@ -63,7 +64,7 @@ class ViewEncoder(nn.Module):
 
         Args:
             image: (N, V, V, 3) long.
-            direction: (N,) long.
+            direction: (N,) long; ignored when ``use_direction`` is False.
             t: (N,) long step index.
 
         Returns:
@@ -76,7 +77,10 @@ class ViewEncoder(nn.Module):
         for conv in self.convs:
             x = x + conv(F.relu(x))
         x = x.flatten(2).transpose(1, 2)  # (N, P, dim)
-        x = x + self.cell_pos + (self.direction_emb(direction) + self.time(t))[:, None]
+        per_view = self.time(t)
+        if self.direction_emb is not None:
+            per_view = per_view + self.direction_emb(direction)
+        x = x + self.cell_pos + per_view[:, None]
         return self.norm(x)
 
 

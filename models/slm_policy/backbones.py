@@ -4,7 +4,8 @@ Two interchangeable implementations of ``Backbone``:
 
 * ``ReadoutBackbone``: a small MLP. Training stage 1 (model M1), and the
   "no SLM" ablation.
-* ``SLMBackbone``: a pretrained causal LM. The read-outs become H soft tokens
+* ``SLMBackbone``: a pretrained causal LM (or, for the M2-randlm control, the
+  same architecture with random weights). The read-outs become H soft tokens
   placed after the mission text; the last token's hidden state is the
   feature. LoRA adapters sit on the low-level layers from the start (they are
   zero-initialised, so they change nothing until a stage trains them).
@@ -14,6 +15,8 @@ so swapping the SLM, the prompt or the read-out layer touches only this file.
 """
 
 from __future__ import annotations
+
+import hashlib
 
 import torch
 import torch.nn as nn
@@ -48,6 +51,12 @@ class Backbone(nn.Module):
         checkpoints do not store because they are reloaded from the hub."""
         return set()
 
+    def regenerated_fingerprint(self) -> str | None:
+        """SHA-256 of frozen weights that are rebuilt from a seed rather than
+        reloaded from the hub (a random LM), so ``load_model`` can check that
+        they came back identical. None when there are none."""
+        return None
+
 
 class ReadoutBackbone(Backbone):
     """MLP over the concatenated read-outs and the mission vector."""
@@ -74,6 +83,8 @@ class SLMBackbone(Backbone):
         dim: read-out width d.
         cfg: ``low_level_layers``, ``lora_rank``, ``lora_targets``,
             ``readout_layer`` and ``gradient_checkpointing`` are used.
+        fingerprint: ``lm_fingerprint(lm)`` if ``lm`` has random weights
+            (returned by ``regenerated_fingerprint``), else None.
 
     Use ``SLMBackbone.from_pretrained(cfg, dim)`` to load ``cfg.slm_name``.
     """
@@ -81,9 +92,10 @@ class SLMBackbone(Backbone):
     PREFIX = "Goal: {mission}\nWhat you see and remember:"
     SUFFIX = "\nNext action:"
 
-    def __init__(self, lm: nn.Module, tokenizer, dim: int, cfg: SLMPolicyConfig):
+    def __init__(self, lm: nn.Module, tokenizer, dim: int, cfg: SLMPolicyConfig, fingerprint: str | None = None):
         super().__init__()
         self.tokenizer = tokenizer
+        self._fingerprint = fingerprint
         self.heads = cfg.read_heads
         self._truncate(lm, cfg.readout_layer)
         for p in lm.parameters():
@@ -104,10 +116,24 @@ class SLMBackbone(Backbone):
 
     @classmethod
     def from_pretrained(cls, cfg: SLMPolicyConfig, dim: int) -> SLMBackbone:
-        from transformers import AutoModel, AutoTokenizer
+        """Load ``cfg.slm_name``, or with ``cfg.slm_pretrained = False`` build its
+        architecture with random weights drawn with ``cfg.slm_init_seed``.
 
-        lm = AutoModel.from_pretrained(cfg.slm_name, dtype=getattr(torch, cfg.slm_dtype))
-        return cls(lm, AutoTokenizer.from_pretrained(cfg.slm_name), dim, cfg)
+        The random weights are drawn on the CPU from a forked RNG, so they do
+        not depend on (or change) the global seed, and the same seed gives the
+        same weights for the same torch / transformers versions.
+        """
+        from transformers import AutoConfig, AutoModel, AutoTokenizer
+
+        dtype = getattr(torch, cfg.slm_dtype)
+        if cfg.slm_pretrained:
+            lm, fingerprint = AutoModel.from_pretrained(cfg.slm_name, dtype=dtype), None
+        else:
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(cfg.slm_init_seed)
+                lm = AutoModel.from_config(AutoConfig.from_pretrained(cfg.slm_name), dtype=dtype)
+            fingerprint = lm_fingerprint(lm)
+        return cls(lm, AutoTokenizer.from_pretrained(cfg.slm_name), dim, cfg, fingerprint)
 
     @staticmethod
     def _truncate(lm: nn.Module, readout_layer: int | None) -> None:
@@ -170,6 +196,18 @@ class SLMBackbone(Backbone):
 
     def pretrained_parameter_names(self):
         return set(self._pretrained)
+
+    def regenerated_fingerprint(self):
+        return self._fingerprint
+
+
+def lm_fingerprint(lm: nn.Module) -> str:
+    """SHA-256 over the names and raw bytes of every tensor in ``lm.state_dict()``."""
+    digest = hashlib.sha256()
+    for name, tensor in sorted(lm.state_dict().items()):
+        digest.update(name.encode())
+        digest.update(tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def build_backbone(cfg: SLMPolicyConfig, dim: int, mission_dim: int) -> Backbone:

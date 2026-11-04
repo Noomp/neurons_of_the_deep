@@ -1,8 +1,9 @@
 """B3: the non-LLM symbolic agent (proposal section 6.3).
 
 A small frame-stacked CNN trained on MiniGrid's symbolic grid observation with
-the same demonstrations, and the same behaviour cloning / DAgger procedure, as
-the frozen-LLM action heads. Its inputs match what the LLM prompt contains:
+the same demonstrations, and the same behaviour cloning settings, as the SLM
+policy's stages 1-3 (``python -m training.train --model b3``, see
+``training.bc_symbolic``). Its inputs match what the LLM prompt contains:
 
 * the last N egocentric 7x7 views, oldest first (N = config.ENV.prompt_num_obs,
   the prompt's observation window), stacked along the channel axis;
@@ -19,13 +20,16 @@ mission and previous-action embeddings -> 6 action logits.
 
 Inputs are built by ``stack_demo_steps`` (from saved demonstrations) or
 ``SymbolicHistory`` (during rollouts); both produce identical tensors for the
-same state. ``SymbolicPolicy`` wraps a trained model for ``babytext.evaluate``.
+same state. ``SymbolicPolicy`` wraps a trained model for ``babytext.evaluate``;
+``save_model`` / ``load_model`` write and read checkpoints.
 """
 
 from __future__ import annotations
 
 import re
 from collections import deque
+from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -36,7 +40,17 @@ from torch.nn.utils.rnn import pack_padded_sequence
 from babytext.constants import COLORS, NUM_ACTIONS, OBJ_TYPES
 from config import ENV, SYMBOLIC, SymbolicAgentConfig
 
-__all__ = ["NO_ACTION", "MissionTokenizer", "SymbolicAgent", "SymbolicHistory", "SymbolicPolicy", "stack_demo_steps"]
+__all__ = [
+    "NO_ACTION",
+    "MissionTokenizer",
+    "SymbolicAgent",
+    "SymbolicHistory",
+    "SymbolicPolicy",
+    "load_checkpoint_info",
+    "load_model",
+    "save_model",
+    "stack_demo_steps",
+]
 
 NO_ACTION = NUM_ACTIONS # represents `no-action`, used as `previous-action` at the start of episodes
 
@@ -170,6 +184,47 @@ class SymbolicAgent(nn.Module):
 
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+# --- checkpoints -------------------------------------------------------------------
+
+
+def save_model(model: SymbolicAgent, path: str | Path, **extra) -> None:
+    """Save the config, the input window (``num_frames``, ``view_size``) and all weights.
+
+    ``extra`` (e.g. epoch, validation score) is stored alongside and returned
+    by ``load_checkpoint_info``.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "config": asdict(model.cfg),
+            "num_frames": model.num_frames,
+            "view_size": model.view_size,
+            "state_dict": model.state_dict(),
+            "extra": extra,
+        },
+        path,
+    )
+
+
+def load_checkpoint_info(path: str | Path) -> dict:
+    """The ``extra`` dict saved with a checkpoint."""
+    return torch.load(path, map_location="cpu", weights_only=False)["extra"]
+
+
+def load_model(path: str | Path) -> SymbolicAgent:
+    """Build a ``SymbolicAgent`` from a file written by ``save_model``, on the CPU.
+
+    The model uses the saved config and input window, not ``config.SYMBOLIC``
+    or ``config.ENV``, and is returned in eval mode (BatchNorm uses its
+    running statistics).
+    """
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    model = SymbolicAgent(SymbolicAgentConfig(**ckpt["config"]), ckpt["num_frames"], ckpt["view_size"])
+    model.load_state_dict(ckpt["state_dict"])
+    return model.eval()
 
 
 # --- inputs from saved demonstrations ----------------------------------------------

@@ -18,12 +18,16 @@ instance that the code reads:
 * ``PPO``: reinforcement learning settings (training stage 4).
 
 Changing ``ENV`` or ``EVAL_SETS`` changes the generated episodes: re-run
-``python -m training.tools.collect_demos`` (and any hidden-state caching) afterwards.
+``python -m training.tools.collect_demos`` afterwards.
 ``training.tools.collect_demos`` stores ``as_dict()`` next to the demos so every dataset
 records the settings that produced it.
 
 One-off overrides do not need edits here, e.g.
-``make_env("goto", "train", num_dists=4)``.
+``make_env("goto", "train", num_dists=4)``. Training runs change ``SLM``,
+``BC``, ``PPO``, ``SYMBOLIC`` and ``TRAIN`` per run with
+``python -m training.train --set section.field=value`` (see training/README.md):
+the instances below are frozen and imported at load time, so reassigning
+them at run time does not reach the code.
 """
 
 from __future__ import annotations
@@ -183,6 +187,10 @@ class SLMPolicyConfig:
     # Spatial encoder: per-cell embedding, then 3x3 convolutions.
     feature_dim: int = 64  # d, features per grid cell
     num_conv_layers: int = 3
+    # Add an embedding of obs["direction"] (the compass heading) to every cell.
+    # Off: B3 and the GLAM prompt get no heading, and every compared model must
+    # see the same inputs. Only for a separate experiment measuring its effect.
+    use_direction: bool = False
 
     # Mission encoder (word GRU, independent of the SLM so the memory path never runs it).
     word_dim: int = 32
@@ -205,6 +213,12 @@ class SLMPolicyConfig:
     readout_hidden: int = 256
     slm_name: str = "Qwen/Qwen3-0.6B"
     slm_dtype: str = "bfloat16"
+    # False is the "M2-randlm" control: slm_name's architecture and tokenizer
+    # with random weights, drawn with slm_init_seed (independent of the run's
+    # --seed). Checkpoints do not store them; load_model regenerates them from
+    # the seed and checks a fingerprint saved with the checkpoint.
+    slm_pretrained: bool = True
+    slm_init_seed: int = 0
     # Layers 0 .. low_level_layers-1 get LoRA from stage 3; the rest stay frozen.
     low_level_layers: int = 10
     lora_rank: int = 8

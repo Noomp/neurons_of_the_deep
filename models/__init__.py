@@ -8,7 +8,8 @@ public names in ``__all__``; everything else is internal. Requires the
 ``models.symbolic_agent``  (done)
     B3, the non-LLM baseline: frame-stacked CNN + FiLM on the symbolic grid.
     ``SymbolicAgent``, ``SymbolicPolicy`` (a ``babytext`` policy),
-    ``SymbolicHistory``, ``stack_demo_steps``, ``MissionTokenizer``, ``NO_ACTION``.
+    ``SymbolicHistory``, ``stack_demo_steps``, ``MissionTokenizer``, ``NO_ACTION``,
+    ``save_model`` / ``load_model`` / ``load_checkpoint_info``.
 
 ``models.slm_policy``  (done, see models/README.md)
     The main model: view encoder, time encoding, write-sparse slot memory,

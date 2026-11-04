@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from config import BC, BCConfig
-from models.slm_policy import SLMPolicy, save_model
+from models.slm_policy import SLMAgentPolicy, SLMPolicy, save_model
 
 from .common import RunLogger, validate
 from .demos import DemoBatch, DemoEpisode, iterate_batches
@@ -90,7 +90,8 @@ def train_bc(
         scores = {k: float(np.mean([m[k] for m in running])) for k in running[0]}
         scores.update(evaluate_bc(model, val_episodes, cfg, device))
         if cfg.val_episodes > 0:
-            scores.update(validate(model, tasks, cfg.val_episodes, device))
+            scores.update(validate(SLMAgentPolicy(model, device=device, greedy=True), tasks, cfg.val_episodes))
+            model.train()
         logger.log(stage=stage.number, epoch=epoch, **scores)
 
         save_model(model, out_dir / "last.pt", stage=stage.number, epoch=epoch, **scores)

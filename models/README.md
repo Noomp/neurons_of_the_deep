@@ -31,7 +31,7 @@ Each module lists its public names in `__all__`.
 
 | module | public names |
 |---|---|
-| `models.symbolic_agent` | `SymbolicAgent`, `SymbolicPolicy`, `SymbolicHistory`, `stack_demo_steps`, `MissionTokenizer`, `NO_ACTION` |
+| `models.symbolic_agent` | `SymbolicAgent`, `SymbolicPolicy`, `SymbolicHistory`, `stack_demo_steps`, `MissionTokenizer`, `NO_ACTION`, `save_model`, `load_model`, `load_checkpoint_info` |
 | `models.slm_policy` | `SLMPolicy` (`forward(obs, memory) -> PolicyOutput`, `initial_memory(batch_size)`), `SLMAgentPolicy`, `Observations`, `observations_from_env`, `PolicyOutput`, `MemoryState`, `parameter_groups`, `GROUPS`, `save_model`, `load_model`, `load_checkpoint_info`, `Backbone`, `ReadoutBackbone`, `SLMBackbone` |
 
 Every model reaches the environment the same way: a policy object, `policy(obs) -> action index`, with `reset(env)`
@@ -56,6 +56,18 @@ Per-cell embeddings → 3x3 convolutions, each modulated by the mission through 
 MLP with the mission and previous-action embeddings → 6 action logits. Sizes are in `config.SYMBOLIC`.
 `stack_demo_steps` builds training inputs from a demo file and `SymbolicHistory` builds the same inputs during a
 rollout. Architecture figure: [report/figures/symbolic_agent_architecture.svg](../report/figures/symbolic_agent_architecture.svg).
+Trained by `python -m training.train --model b3` ([training README](../training/README.md#b3-trainer)).
+
+**Checkpoints.** `save_model(model, path, **extra)` stores the config, the input window (`num_frames`, `view_size`),
+the full `state_dict` (including BatchNorm running statistics) and `extra` (epoch, val scores).
+`load_model(path)` rebuilds the model from the saved config and window, not from `config.SYMBOLIC` / `config.ENV`,
+and returns it on the CPU in eval mode; `load_checkpoint_info(path)` returns `extra`.
+
+```python
+from models.symbolic_agent import SymbolicPolicy, load_model
+
+policy = SymbolicPolicy(load_model("outputs/runs/B3/easy/seed0/best.pt"), device="cuda")
+```
 
 ## The SLM policy (`slm_policy/`)
 
@@ -79,7 +91,7 @@ One forward pass per environment step *t*:
 
 ```
 obs["image"] (7x7x3) ─► cell embedding ─► spatial encoder (3x3 conv layers) ─► F_t  (49 cells x d)
-obs["direction"], step t ─► direction embedding + time encoding e(t) ─────────────┘ added to F_t
+step t ─► time encoding e(t) ──────────────────────────────────────────────────────┘ added to F_t
 
 memory M_{t-1}  (K slots x 49 cells x d) ─┐
                                           ├─► space-time tensor S_t = [F_t ; M_{t-1}]  ((K+1) x 49 x d)
@@ -117,14 +129,23 @@ In `config.SLM` (`SLMPolicyConfig`). The main ones:
 | `memory_slots` (K) | number of past views kept | 8 |
 | `feature_dim` (d) | features per cell | 64 |
 | `num_conv_layers`, kernel | depth and kernel of the spatial encoder | 3, 3x3 |
+| `use_direction` | add an embedding of `obs["direction"]` to every cell (off: B3 gets no heading, so no compared model does; with `false` there is no `direction_emb` at all) | False |
 | `read_heads` (H) | number of soft tokens given to the SLM | 4 |
 | `write_gate_bias`, `write_mode` | initial gate bias ("rarely write") and `soft` / `hard` (straight-through) writes | -2.0, `soft` |
 | `backbone` | `readout` (MLP, stage 1) or `slm` (stages 2-4) | `readout` |
-| `slm_name`, `slm_dtype` | Hugging Face model id and precision | `Qwen/Qwen3-0.6B`, `bfloat16` |
+| `slm_name`, `slm_dtype` | Hugging Face model id (or local folder) and precision | `Qwen/Qwen3-0.6B`, `bfloat16` |
+| `slm_pretrained`, `slm_init_seed` | `false` is the **M2-randlm** control: `slm_name`'s architecture and tokenizer with random weights drawn with `slm_init_seed` | True, 0 |
 | `low_level_layers` | how many of the first SLM layers count as low-level (tuned from stage 3) | 10 of 28 |
 | `lora_rank`, `lora_targets` | LoRA on the low-level layers | 8, attention q/v projections |
 | `readout_layer` | read the action from this layer's output; higher layers are dropped (None = all) | None |
 | `gradient_checkpointing` | recompute SLM activations in the backward pass (needed to fit an 8 GB GPU) | True |
+
+**Checkpoints** (`save_model` / `load_model`) store the config and every weight except the frozen LM, which is reloaded
+from the hub. A random LM (`slm_pretrained=False`) is not stored either: `load_model` regenerates it from
+`slm_init_seed` (drawn on the CPU from a forked RNG, so the global seed neither affects it nor is changed by it) and
+compares it with a SHA-256 fingerprint saved in the checkpoint, raising `RuntimeError` if the weights came out
+differently (e.g. other torch / transformers versions). `load_model(path, **overrides)` uses the saved config plus
+`overrides` and never reads `config.SLM`.
 
 ### Design choices
 
@@ -138,23 +159,24 @@ In `config.SLM` (`SLMPolicyConfig`). The main ones:
 - **Fixed-size memory with a write gate.** A GRU-style update gate decides how much of the current view to store and a
   softmax address picks the slot, so memory and compute stay constant over the episode.
 - **Low-level SLM layers tuned, high-level frozen.** The soft tokens are a new input "modality", so the layers that first
-  process them are adapted with LoRA. The high-level layers stay frozen to keep the SLM's language and reasoning
-  ability, which the thinking mode and the nonce / held-out tests rely on.
-- **Direction as an input.** Unlike B3, the SLM policy gets `obs["direction"]`, because its memory stores egocentric views
-  from different headings (see Limitations). Comparing it with B3 therefore also changes this input; an ablation
-  without direction makes the comparison exact.
+  process them are adapted with LoRA. The high-level layers stay frozen to keep the SLM's language ability, which the
+  nonce / held-out tests rely on.
+- **No heading input.** B3 and the GLAM prompt never see `obs["direction"]`, so the SLM policy does not either
+  (`use_direction=False`): every compared model gets the same observation, and differences between them come from
+  the models alone. Its memory stores egocentric views from different headings anyway (see Limitations).
 
 ### Limitations
 
 - **Egocentric memory.** Each slot stores a view in the agent's own frame. After the agent turns or moves, cell *p* in an
-  old slot is no longer the same place as cell *p* now; the model must learn this from direction and time encodings.
+  old slot is no longer the same place as cell *p* now. Without a heading input, the model must infer how views relate
+  from the views themselves and the time encodings.
   An allocentric (room-aligned) memory would avoid it but needs the agent's position, which `babytext` does not expose yet.
-- **Thinking is expensive and untrained.** Thinking tokens multiply the cost of each of up to 64 / 128 steps, and no
-  demonstration contains reasoning, so thinking can only be learned from reward (stage 4) or used zero-shot.
+- **No thinking mode.** Thinking tokens would multiply the cost of each of up to 64 / 128 steps, and no demonstration
+  contains reasoning to imitate, so the thinking mode is not used (proposal §14).
 - **`test_nonce` mostly tests the mission.** Renaming does not change `image`, so on `test_nonce` only the mission text
   differs. Mapping invented words to grid codes is not learnable from the training data, so a large drop is expected.
 - **No caching.** Hidden states depend on the learned memory and on tuned SLM layers, so they cannot be pre-computed
-  as the proposal planned.
+  as the submitted proposal planned (proposal §14).
 
 ### Open questions
 

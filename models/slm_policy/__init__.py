@@ -2,7 +2,7 @@
 
 Per environment step::
 
-    obs["image"], direction, t ─► ViewEncoder ─► F_t (49 cells x d)
+    obs["image"], t ─► ViewEncoder ─► F_t (49 cells x d)
     obs["mission"] ─► MissionEncoder (word GRU) ─► q
     [F_t ; memory] ─► SpaceTimeAttention(q) ─► H read-outs ─► Backbone ─► action / value heads
     F_t ─► SlotMemory.write (gate g_t: save or not; address w_t: which slot) ─► next memory
