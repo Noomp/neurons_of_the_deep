@@ -46,7 +46,7 @@ def validate(policy, tasks: list[str], n_episodes: int) -> dict[str, float]:
 
     Args:
         policy: a ready-made babytext policy (``obs -> action``, with
-            ``reset``), e.g. ``SLMAgentPolicy(model, greedy=True)`` or
+            ``reset``), e.g. ``HeadPolicy(head, lm)`` or
             ``SymbolicPolicy(model)``. Both put the model in eval mode; the
             caller switches it back to train mode afterwards.
 

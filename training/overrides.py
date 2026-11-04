@@ -8,7 +8,7 @@ every model and trainer.
 
 Values are parsed with the dataclass field's type: ``int``, ``float``,
 ``bool`` (true/false, yes/no, 1/0), ``str``, ``none`` for optional fields, and
-tuples as comma-separated lists (``slm.lora_targets=q_proj,k_proj,v_proj``).
+tuples as comma-separated lists (``head.sweep_layers=4,8,12``).
 """
 
 from __future__ import annotations
@@ -20,8 +20,9 @@ from typing import Any
 
 import config
 
-# --set section -> the config instance it changes.
-SECTIONS: dict[str, str] = {"slm": "SLM", "bc": "BC", "ppo": "PPO", "symbolic": "SYMBOLIC", "train": "TRAIN"}
+# --set section -> the config instance it changes. A changed ``llm`` needs its
+# own hidden-state cache, which training.train checks.
+SECTIONS: dict[str, str] = {"head": "HEAD", "llm": "LLM", "bc": "BC", "symbolic": "SYMBOLIC", "train": "TRAIN"}
 
 # Sections that decide which episodes exist: changing them needs new demos.
 _DEMO_SECTIONS = ("env", "eval_sets", "data")
@@ -80,7 +81,7 @@ def parse_overrides(items: list[str], fixed: dict[str, str] | None = None) -> di
     Args:
         items: the ``--set`` arguments.
         fixed: ``{"section.field": reason}`` for fields the caller sets itself
-            (e.g. ``slm.backbone``, which follows ``--stage``).
+            (e.g. ``head.sweep_layers``, which only the cache uses).
 
     Raises:
         OverrideError: bad syntax, an unknown or fixed section / field, a field

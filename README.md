@@ -1,12 +1,15 @@
 # very deep neurotica
 
-SC4001 group project: a **small language model (SLM) with a learned spatio-temporal memory** as the policy for a
-text-based gridworld (BabyAI-Text). A spatial encoder reads the agent's view, a GRU-style gate decides which views to
-keep in a fixed-size memory, a 2-D space-time attention matrix reads from that memory, and the SLM receives the result
-next to the mission text and chooses one of six actions. Training starts from expert demonstrations and continues
-with reinforcement learning (see [Training](#training)).
+SC4001 group project: **can a lightweight action head trained on the hidden states of a frozen LLM serve as an
+effective and efficient policy for a text-based gridworld (BabyAI-Text), and what does it trade away compared with
+language-grounded action selection?** A frozen Qwen3-0.6B reads the GLAM text prompt; a small MLP reads one layer's
+hidden state and picks one of six actions in a single forward pass. It is compared with the same LLM choosing actions
+through language (generation, log-probability scoring) and with a small non-language agent trained on the same
+demonstrations ([project_proposal.md](project_proposal.md), §3).
 
 > **Changed from the submitted proposal:** see [project_proposal.md §14](project_proposal.md#14-changes-since-the-submitted-proposal-23-oct-2026).
+> A different design (an SLM reading a learned spatio-temporal memory, M1-M4) was pursued between 23 Oct and 4 Nov and is
+> kept on git branch `archive/slm-memory-policy`.
 
 ## Layout
 
@@ -16,8 +19,8 @@ limitations).
 | section | status | contents | README |
 |---|---|---|---|
 | `babytext/` | done | the environment: BabyAI-Text-style gridworld, eval sets and seeds, expert / random policies, rollout and evaluation, demonstration file format, visualisation, environment tools and tests | [babytext](babytext/README.md) |
-| `models/` | B3 and SLM policy done (untrained) | the policies: B3 symbolic agent, the SLM policy (`slm_policy/`); prompted-SLM baselines to come | [models](models/README.md) |
-| `training/` | done (untrained) | demonstration collection and statistics; rewards, behaviour cloning (stages 1-3, B3), recurrent PPO (stage 4); `--set` overrides and the run plan | [training](training/README.md) |
+| `models/` | done (untrained) | the policies: the action head on the frozen LLM (P), the zero-shot baselines B1 / B2, the symbolic agent B3, and the shared frozen-LLM wrapper | [models](models/README.md) |
+| `training/` | done (untrained) | demonstration collection and statistics, hidden-state caching, one behaviour-cloning trainer for P and B3, `--set` overrides and the run plan | [training](training/README.md) |
 
 ```
 grp_proj/
@@ -28,11 +31,11 @@ grp_proj/
 ├── environment.yml      conda env ("neurons") for the whole project, including GPU PyTorch
 ├── pyproject.toml       installs babytext, models, training and config (pip install -e .)
 ├── babytext/            the environment: package, tools/, tests/, README.md
-├── models/              the policies: symbolic_agent.py (B3), README.md
-├── training/            datasets and training: tools/, README.md
+├── models/              the policies: action_head.py (P), prompted.py (B1, B2), symbolic_agent.py (B3), frozen_lm.py
+├── training/            datasets, hidden-state cache and training: tools/, README.md
 ├── tests/               model and training tests
-├── report/              figures; architecture/ holds the design + feasibility note (LaTeX + PDF)
-└── data/, outputs/      generated demos, figures and results (gitignored)
+├── report/              figures for the report (B3 architecture diagram)
+└── data/, outputs/      generated demos, hidden-state caches, figures and results (gitignored)
 ```
 
 Rules for using another section's code:
@@ -80,7 +83,8 @@ Always work inside the activated conda env (or `conda run -n neurons ...`): the 
 the env's `Library/bin`, which is only on the search path when the env is active; calling the env's `python.exe`
 directly makes `import torch` fail with "DLL load failed".
 
-**Tests:** `python -m pytest` (~2 min; the B3 tests are skipped when PyTorch is not installed).
+**Tests:** `python -m pytest` (~80 s; the model and training tests are skipped when PyTorch or Transformers is
+not installed, and use a tiny random Qwen3, so nothing is downloaded).
 
 **Changing dependencies:** edit `pyproject.toml`, then run `uv lock` and
 `uv export --no-hashes --no-emit-project --extra dev --format requirements-txt -o requirements.txt` (`requirements.txt`
@@ -94,25 +98,27 @@ All settings live in [config.py](config.py) (importable as `config`); edit the d
 |---|---|
 | `ENV` | room size, distractors, view size, time limit, held-out goals, invented words, prompt window |
 | `EVAL_SETS` | the six eval sets: seed split and how each one's levels differ from `ENV` |
-| `DATA` | demo counts per task, data and output folders |
+| `DATA` | demo counts per task, data, hidden-state cache and output folders |
 | `EVAL` | episodes per evaluation |
 | `TRAIN` | training protocol: seeds, demo-count curve, DAgger |
+| `LLM` | the frozen LLM shared by B1, B2 and P (Qwen3-0.6B, bfloat16) |
+| `HEAD` | the action head P: layer read, pooling, MLP size, and the layers swept |
+| `PROMPTED` | B1's generation length and mapping model, B2's length normalisation |
 | `SYMBOLIC` | sizes of the B3 symbolic agent |
-| `SLM` | sizes of the SLM policy: encoder, memory, attention, backbone, LoRA |
-| `BC`, `PPO` | optimiser and algorithm settings of training stages 1-3 and 4 |
+| `BC` | behaviour cloning (P and B3): epochs, batch, learning rate, weight decay, gradient clip, val episodes |
 
-Changing `ENV` or `EVAL_SETS` changes the generated episodes, so re-collect demos afterwards.
-`data/demos/summary.json` records the full config each dataset was generated with, and training refuses to start
-when its `env` or `eval_sets` differ from `config.py`.
+Changing `ENV` or `EVAL_SETS` changes the generated episodes, so re-collect demos afterwards; changing the demos,
+`LLM` or `HEAD.sweep_layers` needs a new hidden-state cache. `data/demos/summary.json` records the full config each
+dataset was generated with, each cache records its LLM and the hash of its demo file, and training refuses to start
+when either does not match.
 
 **Per-run changes without editing `config.py`:** `python -m training.train ... --set section.field=value`
-(repeatable) changes `SLM`, `BC`, `PPO`, `SYMBOLIC` or `TRAIN` for one run, e.g. `--set slm.memory_slots=0` or
-`--set bc.epochs=40`; this is how the controls are trained. `ENV`, `EVAL_SETS` and `DATA` cannot be set this way,
-because they change the demos. The instances in `config.py` are frozen and imported at load time, so reassigning
-`config.BC` from code reaches nothing: build a new one with `dataclasses.replace` and pass it explicitly. A run
-started from a checkpoint (`--init`) uses the checkpoint's saved model config plus its `--set` values, not
-`config.SLM`. Each run's `run.json` records the effective configs, the command line, the git commit and `config.py`
-as it was. Details: [training README](training/README.md#changing-a-setting-for-one-run---set).
+(repeatable) changes `HEAD`, `LLM`, `BC`, `SYMBOLIC` or `TRAIN` for one run, e.g. `--set head.layer=16` or
+`--set bc.epochs=40`; this is how the layer and pooling sweep is run. `ENV`, `EVAL_SETS` and `DATA` cannot be set this
+way, because they change the demos. The instances in `config.py` are frozen and imported at load time, so reassigning
+`config.BC` from code reaches nothing: build a new one with `dataclasses.replace` and pass it explicitly. Each run's
+`run.json` records the effective configs, the command line, the git commit and `config.py` as it was. Details:
+[training README](training/README.md#changing-a-setting-for-one-run---set).
 
 ## Quick start
 
@@ -121,9 +127,9 @@ from babytext import evaluate, get_seeds, make_env
 
 env = make_env("goto", "train")                     # task in babytext.TASKS
 obs, info = env.reset(seed=get_seeds("goto", "train", 1)[0])
-obs["image"]                                        # 7x7 symbolic view: input to the spatial encoder (and B3)
-obs["mission"]                                      # goal text: input to the SLM
-obs["prompt"]                                       # GLAM prompt: input to the prompted-SLM baselines
+obs["prompt"]                                       # GLAM prompt: input to the LLM (B1, B2, P)
+obs["image"]                                        # 7x7 symbolic view: input to B3
+obs["mission"]                                      # goal text
 obs, reward, terminated, truncated, info = env.step(2)   # "go forward"
 
 result = evaluate(my_policy, "goto", "val", n_episodes=500)
@@ -132,91 +138,41 @@ result["success_rate"], result["mean_reward"], result["episodes"]
 
 ```bash
 python -m training.tools.collect_demos              # expert demonstrations -> data/demos/
+python -m training.tools.cache_hidden               # frozen-LLM hidden states of every demo step -> data/hidden/
+python -m training.run_plan --dry-run               # every training command
 python -m babytext.tools.play --task goto --eval-set test_nonce   # play by hand
 ```
 
-## Training
+## Method
 
-### Architecture
+**P, the action head** (proposed; [models README](models/README.md#p-the-action-head-action_headpy)):
 
-Per environment step *t* the model runs once (full diagram and shapes in the [models README](models/README.md#the-slm-policy-slm_policy); design and feasibility in [report/architecture/architecture_feasibility.pdf](report/architecture/architecture_feasibility.pdf)):
+```
+obs["prompt"] (GLAM prompt, ~270-300 tokens) ─► frozen Qwen3-0.6B, layers 1..l ─► token vectors at layer l
+     ─► pooling: last token | mean | learned attention ─► LayerNorm ─► MLP (1-2 hidden layers) ─► 6 action logits
+```
 
-1. **Spatial encoder.** MiniGrid's 7x7 symbolic view (`obs["image"]`) is embedded per cell and passed through
-   3x3 convolutions, giving one feature vector per cell. A **time encoding** of the step index *t* is added. The
-   compass heading (`obs["direction"]`) is not used, because B3 and the GLAM prompt do not get it either.
-2. **Gated memory.** A fixed-size memory of K slots, each holding one past view's features. After every step a
-   GRU-style update gate decides *whether* to save the current view and a softmax address decides *which* slot it replaces.
-3. **Space-time attention.** The current view and the K memory slots form a (K+1) x 49 grid of (time, cell)
-   positions. A small convolutional scorer, conditioned on the mission, gives a weight to every position: this 2-D
-   matrix is the space-time weight matrix. H read heads turn it into H weighted sums of features.
-4. **SLM.** An adapter projects the H read-outs into H soft tokens. The SLM (Qwen3-0.6B, 28 layers)
-   reads the mission as text followed by the soft tokens. Its layers are split into **low-level** (the first third,
-   layers 0-9, which first process the new soft tokens) and **high-level** (layers 10-27, which carry the
-   pretrained language and reasoning ability).
-5. **Heads.** An action head (6 logits) and a value head (for PPO) read the SLM's last-token hidden state.
+Only the head is trained (about 0.26-0.4M parameters). The LLM never changes, so the hidden states of every
+demonstration step are computed once and cached (about 14 min on an RTX 5080 for all 78k steps); a head then trains in
+seconds to minutes. Acting runs the LLM once per decision, truncated at layer *l* (21 ms for all 28 layers at batch
+size 1).
 
-### Rewards
+**Language-grounded baselines** on the same LLM and prompt, zero-shot: **B1** generates a short continuation and maps
+it to the nearest action name by sentence-embedding similarity; **B2** scores the six action names by their
+length-normalised log-probability after the prompt. Both choose through the *meaning* of the action names; the head's
+six outputs mean nothing until demonstrations teach them. What the head gives up by that is RQ3.
 
-- **Immediate reward** for each action: the environment's reward (non-zero only on the final, successful step) plus
-  potential-based shaping `λ · (γ·Φ(s_{t+1}) - Φ(s_t))` with `Φ(s) = -distance from the agent to the nearest goal object`.
-  Potential-based shaping does not change which policy is optimal (Ng et al., 1999). It needs the agent's position,
-  which the environment must first add to `info`.
-- **Delayed reward over space-time**: the discounted return `G_t = Σ_k γ^k r_{t+k}`, estimated with GAE against the
-  value head. Gradients from it flow back through the memory across the whole rollout, and this signal teaches
-  the memory gate and the space-time weights which past (time, cell) positions mattered for success.
+**B3, the non-language agent**: a frame-stacked CNN with FiLM on the last three 7x7 symbolic views and the two actions
+between them (the same window as the prompt), plus the goal read word by word. It needs no LLM, so P vs B3 asks
+whether running the LLM pays for its cost.
 
-### Training steps
-
-Every stage starts from the previous stage's weights and is selected on `val` only.
-
-| stage | data and loss | trains | frozen |
-|---|---|---|---|
-| 0. demonstrations | `python -m training.tools.collect_demos`: 2000 train + 200 val expert episodes per task (`config.DATA`) | nothing | — |
-| 1. warm start without SLM | behaviour cloning (cross-entropy on expert actions) on whole episodes in time order, small action head directly on the read-outs | spatial encoder, time encoding, memory gate, space-time scorer, small action head | — (no SLM yet) |
-| 2. connect the SLM | behaviour cloning, same data | adapter, action head; encoder, gate and scorer continue at a lower learning rate | **all SLM parameters (low- and high-level)** |
-| 3. adapt the SLM's input side | behaviour cloning, same data | **LoRA on the SLM's low-level layers** (attention q/v projections of layers 0-9), plus everything from stage 2 | **the SLM's high-level layers** and the LM head |
-| 4. reinforcement learning | recurrent PPO in the environment on `train` seeds, immediate + delayed reward | everything trained in stage 3, plus the value head | **the SLM's high-level layers** and the LM head |
-
-The model after stage 1 (M1) is the SLM policy without its SLM, and stages 2, 3 and 4 give M2, M3 and M4. Stage 4
-(M4) is a stretch goal in the proposal (§6.3); the core results come from stages 1-3. B3 (`models/symbolic_agent.py`)
-is trained like stage 1 on the same demonstrations and batches, with its own fixed-window architecture
-(`python -m training.train --model b3`). Every model ID and control is one command; `python -m training.run_plan
---dry-run` prints them all ([training README](training/README.md#model-ids)). An optional DAgger round between stages 3 and 4 relabels states the model visits with the
-expert's action. The SLM's thinking mode is not used: demonstrations contain no reasoning, and it is too slow inside
-PPO (proposal §14).
-
-### Tunable parameters
-
-**Learned by gradient descent:**
-
-| group | parameters | trained in stages |
-|---|---|---|
-| spatial encoder | cell embeddings and 3x3 conv kernels (the spatial part of the space-time weights) | 1-4 |
-| time encoding | learned embedding of the step index (0 to the 64 / 128 step limit) | 1-4 |
-| memory gate | GRU-style update gate `W_g, b_g` and the slot-address weights: what to keep and what to throw away | 1-4 |
-| space-time attention | conv scorer that produces the (K+1) x 49 weight matrix, per read head | 1-4 |
-| adapter | linear map from read-outs to the SLM's embedding width | 2-4 |
-| SLM low-level | LoRA matrices on layers 0-9 | 3-4 |
-| SLM high-level | layers 10-27, LM head | never |
-| heads | action head (1-4), value head (4) | see left |
-
-**Chosen on `val`** (not learned): memory slots K (8), feature width d (64), read heads H (4), number of low-level
-SLM layers (10), LoRA rank (8), learning rate per group, shaping weight λ, discount γ, GAE λ, PPO clip and entropy
-coefficient, number of demonstrations. Values in brackets are the starting points; they live in `config.SLM`,
-`config.BC` and `config.PPO`. The thinking mode is not implemented (see the feasibility note).
-
-Assumptions made where the original brief was ambiguous (what "learn the weights" of the reward means, and whether
-memory should get pickier over the episode or over training) are listed in the
-[models README](models/README.md#open-questions).
-
-<details>
-<summary>Original design brief</summary>
-
-The model is an adapted SLM model to encode for temporatal information as well as spacial information. The input parameters will be encoded with space-time matrix with the corresponding weights corresponding to the attention to that point in spacetime. The model will be provided with the following rewards - immediate reward as a direct result from its action, and reward over space time in which the model will learn the weights for. The spacetime weight matrix will be a 2 dimensional matrix. At time $t$, the "memory" which is decided by the model whether to "save" the memory, similar to a GRU. The memory will be a fix length vector to fit the fixed-size space-time matrix with the corresponding weights.
-
-The model will contain a SLM with the capability to think, as well as an encoder that encodes the observation input to encode for space time, as well as a GRU component that learns which feature observation is worth storing in its fixed length memory array, the input observation will be time encoded, to hopefully encourage more memorization at the start and being more picky of its memory as the training progresses. The tunable parameters will include: the GRU on which decides which memory to keep and which to throw, as well as the weights of spacetime matrix (similar to a coonvolutional neural network), as well as the SLM to take in these new inputs.
-
-</details>
+**Training** ([training README](training/README.md)): behaviour cloning on 2000 expert demonstrations per task, with
+one shared loop for P and B3 (same demonstrations, seeds, batches, optimiser settings and selection rule). The
+learning rate (initially 1e-2) halves when val cross-entropy stalls, and training stops once it has not improved for
+6 epochs. Each run keeps the epoch with the lowest val cross-entropy and measures val greedy success once on it;
+layers, poolings and other configurations are compared by that success. The layer sweep has two steps: last-token and mean pooling at
+layers 4, 8, ..., 28 with 1 or 2 MLP hidden layers, then learned attention pooling at the two best layers.
+No reinforcement learning, no LLM fine-tuning, and no thinking mode (proposal §4, §14).
 
 ## Evaluation
 
@@ -227,11 +183,11 @@ reference results are in the [babytext README](babytext/README.md#tasks).
 
 | eval set | seeds | distractors | goal objects | names | tests |
 |---|---|---|---|---|---|
-| `train` | train | 8 | all except held-out | real | demonstrations and RL rollouts |
+| `train` | train | 8 | all except held-out | real | demonstrations |
 | `val` | val | 8 | all except held-out | real | all model selection |
 | `test` | test | 8 | all except held-out | real | in-distribution result |
-| `test_dist16` | test | **16** | all except held-out | real | clutter: attention and memory under more distractors |
-| `test_nonce` | test | 8 | all except held-out | **invented** (`red`→`dueno`, `ball`→`tism`, ...) | language grounding of the mission (the `image` codes are unchanged) |
+| `test_dist16` | test | **16** | all except held-out | real | clutter: many more descriptions in the prompt |
+| `test_nonce` | test | 8 | all except held-out | **invented** (`red`→`dueno`, `ball`→`tism`, ...) | language grounding: names the LLM has never seen (B3's `image` codes are unchanged) |
 | `test_heldout` | test | 8 | **one named object held out** (yellow box, red key, green ball) | real | generalisation to unseen goals |
 
 Use `val` for all model selection and evaluate `test*` once at the end (proposal §6.5). Report every result next to
@@ -243,23 +199,10 @@ Comparisons, all on the same seeds (proposal §6.3; research questions in §3):
 |---|---|---|---|
 | Random | uniform random actions | - | chance floor (report next to every result) |
 | Expert | MiniGrid's BabyAI bot, reads the full state | - | ceiling; teacher for the demonstrations |
-| B1 | Qwen3 reads the GLAM text prompt and generates text, mapped to the nearest valid action | - | can an untrained LM act from text? |
-| B2 | Qwen3 log-probability scoring of the six action strings | - | same, without invalid outputs |
-| B3 | frame-stacked CNN + FiLM on the last 3 symbolic views, mission read word by word, no LM | BC | standard BabyAI-style reference |
-| M1 | SLM policy with an MLP in place of the SLM (encoder, memory, attention) | BC (stage 1) | base of the M chain |
-| M2 | M1 + frozen Qwen3 reading the mission and 4 soft tokens | BC (stage 2) | does a pretrained LM help? |
-| M3 | M2 + LoRA on Qwen3 layers 0-9 | BC (stage 3) | does tuning the LM's input layers help? |
-| M4 *(stretch)* | M3 + recurrent PPO | PPO (stage 4) | does RL fix behaviour-cloning errors? |
-
-Controls, each changing one thing:
-
-| id | change | question it answers | status |
-|---|---|---|---|
-| M1-nomem | memory off (K = 0, `--set slm.memory_slots=0`) | does the memory help? | planned; trainable |
-| M1-long | M1 trained for as many epochs as stages 1 and 2 combined (`--set bc.epochs=40`) | makes M1 vs M2 fair (M2 gets extra training) | planned; trainable |
-| M2-L{10,18} | read Qwen3 at layer 10 or 18 (`--set slm.readout_layer=N`); layer 28 is M2 itself | where the decision-relevant information sits | planned (easy tier); trainable |
-| M2-randlm | Qwen3 architecture with random weights (`--set slm.slm_pretrained=false`) | the LM's knowledge, or just its size? | stretch; trainable |
-| M1-view{3,5} | agent view reduced to 3x3 or 5x5, with and without memory | makes memory necessary, so the K = 0 control can show a difference | stretch |
+| B1 | Qwen3 reads the GLAM prompt and generates text, mapped to the nearest valid action | - | RQ1, RQ3: can the untrained LLM act through language? |
+| B2 | Qwen3 log-probability scoring of the six action strings | - | RQ1, RQ3: same, without invalid outputs |
+| B3 | frame-stacked CNN + FiLM on the last 3 symbolic views and 2 actions, goal read word by word, no LLM | BC | RQ1: does the LLM pay for its cost? |
+| P-L*l*-*pool*-h*n* | action head on Qwen3 layer *l* (4, 8, ..., 28), pooling last / mean (all layers) or attention (2 best layers), *n* = 1-2 MLP hidden layers | BC | RQ1 (best variant), RQ2 (layer and pooling), RQ3 |
 
 ## Acknowledgements
 

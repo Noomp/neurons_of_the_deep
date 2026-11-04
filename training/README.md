@@ -1,18 +1,18 @@
 # training
 
-Builds the training data and trains the models in [`models/`](../models/README.md): behaviour cloning on
-expert demonstrations, then reinforcement learning with immediate and delayed rewards. Depends on `babytext`, `models`
-and `config`; nothing imports from it.
+Builds the training data and trains the models in [`models/`](../models/README.md) by behaviour cloning on expert
+demonstrations: the action head on the frozen LLM (P) and the symbolic agent (B3), under one shared protocol. B1 and
+B2 are zero-shot and need no training. Depends on `babytext`, `models` and `config`; nothing imports from it.
 
-Status: **dataset tools, rewards, all four training stages and the B3 trainer done**; every model ID of the comparison
-can be trained with one command (untrained so far). The stages are specified in the
-[Training section of the root README](../README.md#training); the feasibility assessment and compute estimates are in
-[report/architecture/architecture_feasibility.pdf](../report/architecture/architecture_feasibility.pdf).
+Status: **dataset tools, hidden-state cache, the shared behaviour-cloning trainer, the command line and the run plan
+done** (untrained so far). The method is in the [root README](../README.md#method) and
+[project_proposal.md](../project_proposal.md) §6.4.
 
 ## Install
 
 Same shared environment as the rest of the repository ([root README](../README.md#setup)). The dataset tools need
-only the base install; training needs the model dependencies (`pip install -e ".[models]"`, or the conda env).
+only the base install; caching and training need the model dependencies (`pip install -e ".[models]"`, or the conda
+env).
 
 ## Run
 
@@ -20,68 +20,118 @@ From the repo root, inside the activated env:
 
 ```bash
 python -m training.tools.collect_demos                       # expert demos -> data/demos/ (counts from config.DATA, ~30 s)
-python -m training.tools.collect_demos --n-train 500 --tasks goto
 python -m training.tools.dataset_stats                       # charts of demos and eval sets -> outputs/figures/
+python -m training.tools.cache_hidden                        # LLM hidden states of every demo step -> data/hidden/
+python -m training.train --set head.layer=16 --set head.pooling=mean --out outputs/runs/p   # one head
+python -m training.train --model b3 --out outputs/runs/b3                                     # B3
+python -m training.run_plan --dry-run                        # every run of the comparison
 ```
 
 `data/` and `outputs/` are git-ignored and can always be regenerated. `data/demos/summary.json` records the full
-`config` each dataset was generated with; after changing `config.ENV` or `config.EVAL_SETS`, re-collect.
+`config` each dataset was generated with; after changing `config.ENV` or `config.EVAL_SETS`, re-collect, then re-cache.
 
-## Training a model
+### Hidden-state cache
 
-```bash
-python -m training.train --stage 1 --tasks goto pickup --out outputs/runs/m1          # CPU is enough
-python -m training.train --stage 2 --tasks goto pickup --init outputs/runs/m1/best.pt --out outputs/runs/m2
-python -m training.train --stage 3 --tasks goto pickup --init outputs/runs/m2/best.pt --out outputs/runs/m3
-python -m training.train --stage 4 --tasks goto pickup --init outputs/runs/m3/best.pt --out outputs/runs/m4
-python -m training.train --model b3 --tasks goto pickup --out outputs/runs/b3          # B3, CPU is enough
-```
+`python -m training.tools.cache_hidden [--tasks ...] [--layers ...] [--sequence-layers ...]` runs the frozen LLM once
+over every demo step's prompt and writes, per demo dataset, into `data/hidden/<model>-<dtype>/`:
 
-`--model slm` (the SLM policy, needs `--stage`) is the default. Other options: `--n-demos N` (first N training demos
-per task), `--seed k` (default: the first of `config.TRAIN.seeds`), `--id` (model ID recorded in `run.json`),
-`--device`, `--demos`, and `--set` (below).
+| file | contents |
+|---|---|
+| `<task>_<split>.last.npy`, `.mean.npy` | (steps, layers, 1024) last-token and mean vectors at `--layers` (default `config.HEAD.sweep_layers`) |
+| `<task>_<split>.seq<l>.npy`, `.offsets.npy` | every token's vector at layer *l*, for attention pooling (only `--sequence-layers`), and each step's token range |
+| `<task>_<split>.meta.json` | LLM config, layers, step count, SHA-256 of the demo file |
+
+Vectors are the raw bits of bfloat16 (the LLM's own precision). Measured on an RTX 5080: about 96 prompts/s, so about
+14 min for all 78k demo steps, or 82 s for `goto` train + val including one sequence layer. Sizes: about 2 KB per step
+per layer and pooling (about 2.2 GB for all tasks at the 7 sweep layers), and about 0.6 MB per step per sequence layer
+(about 14 GB for the easy tier, 28 GB for the hard tier, per layer). Training refuses a cache whose demo-file hash,
+LLM or layers do not match, and says what to re-run.
+
+## Training a model: `python -m training.train`
+
+`--model head` (the default) trains P from the cache; `--model b3` trains B3. Other options: `--tasks` (default
+`goto pickup`), `--n-demos N` (first N training demos per task), `--seed k` (default: the first of
+`config.TRAIN.seeds`), `--id` (model ID recorded in `run.json`), `--device`, `--demos`, `--hidden`, and `--set` (below).
+
+### The shared protocol (`bc.py`)
+
+Both models go through the same `train_bc` loop, so the protocol is identical by construction:
+
+- **Data:** the first `--n-demos` training episodes per task, and all val demo episodes.
+- **Batches:** every step of `config.BC.batch_episodes` whole episodes, in the order `demos.batch_indices` draws from
+  `--seed` alone, so P and B3 see the same batches for the same seed.
+- **Optimiser:** AdamW with `config.BC`'s learning rate, weight decay and gradient clipping; cross-entropy on the
+  expert's actions.
+- **Learning-rate decay and early stopping:** after each epoch, val cross-entropy and accuracy on the val demos
+  (eval mode). With `lr_decay="plateau"` (default) the learning rate halves (`lr_factor`) after `lr_patience` = 2
+  epochs without a lower val cross-entropy (down to `min_lr`); `"cosine"` anneals it over `epochs`, `"none"` keeps it.
+  Training stops after `patience` = 6 epochs without improvement, so every model trains until it stops improving;
+  `epochs` = 200 is only an upper bound. Each epoch's `lr` is logged.
+- **Selection:** the epoch with the lowest val cross-entropy is kept as `best.pt` (`last.pt` is the latest), and
+  greedy success on `config.BC.val_episodes` val episodes per task is measured **once**, on that epoch. Configurations
+  are compared by that success (`run_plan --summary`). Measuring success after every epoch would run the LLM at every
+  decision of every val episode of every epoch: days of GPU time over the sweep (proposal §14).
+
+**Why these defaults.** With the earlier fixed schedule (lr 3e-4, 20 epochs) both models under-trained: the head's val
+cross-entropy flattened early and its val success stayed at the random floor. Measured on `goto` (all 2000 demos, val
+cross-entropy of the selected epoch, plateau decay and early stopping unless noted):
+
+| model | 3e-4, fixed, 20 epochs | 3e-4 | 1e-3 | 3e-3 | **1e-2** | 3e-2 |
+|---|---|---|---|---|---|---|
+| P, layer 16, last token | 0.722 | 0.713 | 0.679 | **0.638** | 0.639 | – |
+| P, layer 16, mean | 0.678 | 0.616 | 0.586 | 0.510 | **0.505** | – |
+| P, layer 28, last token | 0.746 | 0.728 | 0.723 | **0.626** | 0.638 | – |
+| B3 | 0.568 | 0.569 | 0.518 | 0.490 | **0.413** | 0.536 |
+
+An initial learning rate of 1e-2 is the best or within 0.012 of the best for every model, so one shared value keeps
+the protocol identical for P and B3; runs then stop after 16-35 epochs. This used val demos only (no test data).
+
+For P, training reads only the cache; the LLM runs once at the end, truncated to the head's layer, for the val
+episodes (about 65 s for 100 `goto` episodes on an RTX 5080). For B3, each step is an independent frame-stacked sample
+(`stack_demo_steps`).
+
+### Outputs
 
 Each run writes to `--out`:
 
-- `metrics.jsonl`: one line per epoch (BC) or update (PPO). Both BC trainers log `ce`, `accuracy`, `val_ce`,
-  `val_accuracy`, `val_success` and `val_<task>`; the SLM policy also logs `write_rate`.
-- `last.pt` (every epoch) and `best.pt` (best val success, or lowest val CE when `bc.val_episodes=0`). They load with
-  `models.slm_policy.load_model` or `models.symbolic_agent.load_model`.
+- `metrics.jsonl`: one line per epoch (`ce`, `accuracy`, `val_ce`, `val_accuracy`), then one line with the selection:
+  `selected_epoch`, its metrics, `val_success` and `val_<task>`.
+- `best.pt` (the selected epoch, with its val success) and `last.pt`. They load with
+  `models.action_head.load_policy` / `load_model` or `models.symbolic_agent.load_model`.
 - `run.json`, which records what was actually used:
 
 | key | contents |
 |---|---|
-| `model` | `type` (`slm` / `b3`), stage, `--init`, the **effective model config** `cfg`, trainable parameters |
-| `bc`, `ppo`, `symbolic`, `train` | the effective configs, after `--set` |
+| `model` | `type` (`head` / `b3`), the effective model `cfg`, for P the `llm` config and the `cache` meta data, trainable parameters |
+| `bc`, `train` | the effective configs, after `--set` |
 | `overrides` | the parsed `--set` values |
 | `command`, `args`, `model_id`, `device` | the full command line and its parsed arguments |
 | `git` | commit hash and whether the working tree was dirty |
 | `demos` | `datasets` and `config` from `data/demos/summary.json` |
-| `file_config` | `config.as_dict()`: config.py as it was, *before* overrides and checkpoint configs |
+| `file_config` | `config.as_dict()`: config.py as it was, *before* overrides |
+| `selected` | the selected epoch, its metrics and its val success |
 | `warnings`, `finished`, `wall_time_s` | printed warnings; `finished` turns true when training ends |
 
 ### Changing a setting for one run: `--set`
 
-`--set section.field=value` (repeatable) changes one field of `config.SLM` (`slm`), `config.BC` (`bc`), `config.PPO`
-(`ppo`), `config.SYMBOLIC` (`symbolic`) or `config.TRAIN` (`train`) for this run only. The value is parsed with the
-field's type: `int`, `float`, `bool` (`true` / `false`), `none` for optional fields, and tuples as comma-separated lists.
+`--set section.field=value` (repeatable) changes one field of `config.HEAD` (`head`), `config.LLM` (`llm`),
+`config.BC` (`bc`), `config.SYMBOLIC` (`symbolic`) or `config.TRAIN` (`train`) for this run only. The value is parsed
+with the field's type: `int`, `float`, `bool` (`true` / `false`), `none` for optional fields, and tuples as
+comma-separated lists.
 
 ```bash
-python -m training.train --stage 1 --set slm.memory_slots=0 --set bc.lr=1e-3 --out outputs/runs/try
-python -m training.train --stage 2 --init outputs/runs/m1/best.pt --set slm.lora_targets=q_proj,k_proj,v_proj --out ...
+python -m training.train --set head.layer=12 --set head.pooling=attention --set bc.lr=1e-3 --out outputs/runs/try
 ```
 
 - Unknown sections or fields, wrong types and a field set twice are errors. `env`, `eval_sets` and `data` cannot be
-  set: they change which episodes the demos contain, so edit `config.py` and re-collect. `slm.backbone` follows
-  `--stage`. Setting a section the run never reads (e.g. `ppo` in stage 1) prints a warning.
+  set: they change which episodes the demos contain, so edit `config.py` and re-collect. `head.sweep_layers` cannot be
+  set per run either: it only decides what `cache_hidden` caches. Setting a section the model never reads (e.g. `head`
+  with `--model b3`) prints a warning.
+- A changed `llm` needs its own cache (`cache_hidden --set llm.<field>=<value>`); training checks.
 - The config instances are frozen and imported when a module loads (often as default arguments, e.g.
   `train_bc(..., cfg=BC)`), so reassigning `config.BC` from code does **not** reach the trainers. `train.py` builds the
-  effective configs with `dataclasses.replace` and passes them explicitly to `SLMPolicy`, `load_model`, `SymbolicAgent`,
-  `train_bc`, `train_symbolic_bc` and `train_ppo`. Do the same when calling these from code.
-- **With `--init`, `config.SLM` is not used.** The model config is the checkpoint's saved config, then the stage's
-  backbone, then the `slm` overrides; so stage 2+ keeps the architecture its checkpoint was trained with. If
-  `config.SLM` differs from that config on a field you did not `--set`, a warning names the fields (e.g. after editing
-  `readout_layer` in config.py, which has no effect on a stage-2 run; use `--set slm.readout_layer=10`).
+  effective configs with `dataclasses.replace` and passes them explicitly to `ActionHead`, `SymbolicAgent`,
+  `train_head_bc` and `train_symbolic_bc`. Do the same when calling these from code.
 
 ### Demos must match the config
 
@@ -90,133 +140,94 @@ and refuses to run if any value differs, if the summary is missing, or if it doe
 `collect_demos --tasks goto`). Re-collect with `python -m training.tools.collect_demos`. `--n-demos` larger than the
 collected count is refused too.
 
-### Model IDs
-
-Every trained model of the comparison (root README, [Evaluation](../README.md#evaluation)) is one command:
-
-| ID | command | differs from |
-|---|---|---|
-| B3 | `--model b3` | - |
-| M1 / M2 / M3 | `--stage 1..3`, `--init` the previous stage's `best.pt` | - |
-| M1-nomem | `--stage 1 --set slm.memory_slots=0` | M1 |
-| M1-long | `--stage 1 --set bc.epochs=40` (stage-1 + stage-2 epochs, `2 x config.BC.epochs`) | M1 |
-| M2-randlm | `--stage 2 --init <M1> --set slm.slm_pretrained=false` | M2 |
-| M2-L{10,18} | `--stage 2 --init <M1> --set slm.readout_layer=N` (layer 28 is all of Qwen3-0.6B, i.e. M2) | M2 |
-
-All of them share the protocol: same demos (first `--n-demos` per task), same `config.BC` optimiser settings, same
-seeds, same selection rule (val success after every epoch). Controls are recorded in the checkpoint's saved config,
-so an evaluation needs no special cases. The core results are behaviour cloning only, so M4 (`--stage 4 --init <M3>`,
-PPO) is a stretch goal that still works by hand but is not in the run plan.
-
-### Run plan
+## Run plan: `python -m training.run_plan`
 
 ```bash
-python -m training.run_plan --dry-run                                # every command
-python -m training.run_plan --dry-run --ids M1 M2 --tiers easy --seeds 0
-python -m training.run_plan --ids B3 M1 M2 --tiers easy              # run them one after another
+python -m training.run_plan --dry-run                                  # every command
+python -m training.run_plan --ids B3 "P-L*" --tiers easy               # step 1 on the easy tier, in order
+python -m training.run_plan --summary --tiers easy                     # val success per ID, best first
+python -m training.run_plan --attention-layers 12 16 --ids "P-*-attn-*" --tiers easy   # step 2
+python -m training.run_plan --curve B3 P-L16-mean-h1 --ids "*-n*"      # demo-count curves
 ```
 
 One command per model ID x seed (`config.TRAIN.seeds`) x tier (easy = `goto pickup`, hard =
-`putnext pickup_then_goto`), into `outputs/runs/<id>/<tier>/seed<k>/`. A later stage's `--init` is the `best.pt` of the
-same tier and seed one stage earlier, and models are listed after the runs they start from. Without `--dry-run` it
-runs the commands in order and skips runs whose `run.json` says `"finished": true`. `--set` and `--n-demos` are passed
-to every run (a per-ID `--set` of the same field wins; M1-long doubles the effective `bc.epochs`).
+`putnext pickup_then_goto`), into `outputs/runs/<id>/<tier>/seed<k>/`, after the `cache_hidden` commands the heads
+need:
 
-### Reproducibility
+| ID | what | step |
+|---|---|---|
+| `B3` | the symbolic agent | 1 |
+| `P-L<l>-<last\|mean>-h<n>` | head at layer *l* of `config.HEAD.sweep_layers` (4, 8, ..., 28), last-token or mean pooling, *n* = 1 or 2 MLP hidden layers: 28 IDs | 1 |
+| `P-L<l>-attn-h<n>` | learned attention pooling at the layers passed with `--attention-layers` (the 1-2 best of step 1 by val success) | 2 |
+| `<ID>-n<k>` | `--curve ID`: the ID trained on the first *k* demos per task, for every *k* in `config.TRAIN.demo_counts` below the full count (the full count is the ID's own run) | 3 |
+
+`--ids` takes names or glob patterns. Without `--dry-run` the commands run in order, missing caches are built first,
+and runs whose `run.json` says `"finished": true` are skipped, so an interrupted plan can be restarted. `--set` and
+`--n-demos` are passed to every run (a per-ID `--set` of the same field wins).
+
+Step 1 is 29 IDs x 3 seeds x 2 tiers = 174 runs. A head trains in a few seconds from the cache (one `goto` run until
+early stopping: 4-7 s); the val success measurement (live LLM) is about a minute per run on the easy tier, longer on
+the hard tier and for failing policies.
+
+## Reproducibility
 
 `--seed` seeds Python, NumPy and PyTorch (CPU and all GPUs) before the model is built, and the order of the training
-episodes depends only on `--seed` and the data: both BC trainers draw the same batches from `demos.batch_indices` for
-the same seed. The random LM of M2-randlm is drawn from its own seed (`slm.slm_init_seed`), independent of `--seed`.
-**GPU runs are not bit-for-bit reproducible**: some CUDA kernels (e.g. atomic adds in backward passes) are
-non-deterministic, so two GPU runs with the same seed can differ slightly. CPU runs repeat exactly.
-
-### Modules
-
-| module | role |
-|---|---|
-| `stages.py` | `STAGES` (backbone, algorithm, learning-rate scale per parameter group) and `make_optimizer` |
-| `demos.py` | demonstration files -> padded (B, T) episode batches; `batch_indices` (shared batch order); `check_demo_config` |
-| `bc.py` | behaviour cloning of the SLM policy (stages 1-3) |
-| `bc_symbolic.py` | behaviour cloning of B3: `train_symbolic_bc`, `symbolic_demos`, `symbolic_bc_loss` |
-| `vec_env.py` | the environment side of RL: N envs, auto-reset on fresh train seeds, step counters, shaping potential |
-| `rewards.py` | potential-based shaping and GAE, no environment code |
-| `ppo.py` | recurrent PPO (stage 4): one sequence per env per rollout, memory stored at its start |
-| `overrides.py` | `--set` parsing: `parse_overrides`, `effective_configs` |
-| `common.py` | `set_seed`, `RunLogger`, `validate` (any babytext policy), `git_state` |
-| `train.py` | command line for one run |
-| `run_plan.py` | command lines for every model ID x seed x tier |
-
-### B3 trainer
-
-`train_symbolic_bc` follows `train_bc` wherever B3 allows: the same `DemoEpisode`s, the same batches of whole episodes
-for the same seed, AdamW with `config.BC`'s epochs, lr, weight decay and gradient clipping, and the same
-selection and metric names. B3 has no memory, so there is no write penalty, and one batch is **all steps of
-`batch_episodes` episodes** (each step a separate frame-stacked sample from `stack_demo_steps`), so every update sees
-the same data as the SLM trainer's. BatchNorm is in eval mode for the val loss and the val episodes.
+episodes depends only on `--seed` and the data. The cache is deterministic for a given LLM, dtype and demo file.
+**GPU runs are not bit-for-bit reproducible**: some CUDA kernels are non-deterministic, so two GPU runs with the same
+seed can differ slightly. CPU runs repeat exactly.
 
 ## Public API
 
 | what | where |
 |---|---|
-| dataset tools | `training.tools.collect_demos`, `training.tools.dataset_stats` (command line) |
-| training | `python -m training.train` (one run), `python -m training.run_plan` (all model IDs) |
-| trainers from code | `training.bc.train_bc`, `training.bc_symbolic.train_symbolic_bc`, `training.ppo.train_ppo`; pass every config explicitly |
-| per-run settings | `training.overrides.parse_overrides`, `effective_configs` |
+| dataset tools | `training.tools.collect_demos`, `training.tools.dataset_stats`, `training.tools.cache_hidden` (command line) |
+| training | `python -m training.train` (one run), `python -m training.run_plan` (all IDs, summary) |
+| the shared trainer | `training.bc`: `train_bc`, `bc_loss`, `evaluate_bc`, the `BCData` interface |
+| per-model data and trainers | `training.bc_head`: `HeadDemos`, `head_demos`, `train_head_bc`; `training.bc_symbolic`: `SymbolicDemos`, `symbolic_demos`, `train_symbolic_bc` |
+| the cache | `training.hidden_cache`: `cache_dir`, `check_cache`, `load_pooled`, `open_sequences`, `CacheError` |
+| demos | `training.demos`: `load_demo_episodes`, `batch_indices`, `check_demo_config` |
+| per-run settings | `training.overrides`: `parse_overrides`, `effective_configs` |
+| helpers | `training.common`: `set_seed`, `RunLogger`, `validate` (any babytext policy), `git_state` |
 | reading and writing demonstration files | `babytext.data`: `save_demos`, `load_episodes`, `load_steps`, `load_symbolic` |
-| training protocol settings | `config.TRAIN` (seeds, demonstration counts, DAgger rounds) |
 
-The file format belongs to `babytext` because it stores `babytext.Episode`s and `babytext.tools.visualise_episode`
+The demo file format belongs to `babytext` because it stores `babytext.Episode`s and `babytext.tools.visualise_episode`
 reads it too; this keeps the environment free of imports from `training`. The file layout is described in the
 [babytext README](../babytext/README.md#demonstration-files).
 
 ## Flow
 
 ```
-training.tools.collect_demos ─► babytext.data.save_demos ─► data/demos/<task>_<split>.{jsonl,npz}              done
-                                                                  │
-          babytext.data.load_symbolic + load_episodes ◄───────────┘
-                     │ cut into episodes by `episode`, ordered by `t`
-                     ▼
- stage 1  behaviour cloning, no SLM (encoder, memory, attention, small action head)                   done   
- stage 2  behaviour cloning with the SLM frozen (adds adapter + action head on the SLM)               done   
- stage 3  behaviour cloning + LoRA on the SLM's low-level layers                                      done   
- stage 4  recurrent PPO in the environment, immediate + delayed rewards                               done   
- B3       behaviour cloning of the symbolic agent on the same episodes and batches (bc_symbolic.py)   done
-                     │
-                     ▼
- SLMAgentPolicy(model) / SymbolicPolicy(model) ─► babytext.evaluate(policy, task, "val", n) for selection; test* once at the end
+collect_demos ─► data/demos/<task>_<split>.{jsonl,npz} + summary.json
+                     │                                   │
+                     │ prompts                           │ views, actions, missions
+                     ▼                                   ▼
+cache_hidden: frozen LLM, once ─► data/hidden/...   stack_demo_steps (B3's frame-stacked inputs)
+                     │                                   │
+                     ▼                                   ▼
+               HeadDemos                           SymbolicDemos
+                     └───────────► bc.train_bc ◄─────────┘   same batches, optimiser, selection
+                                        │
+                                        ▼
+        best.pt / last.pt / metrics.jsonl / run.json ─► HeadPolicy / SymbolicPolicy ─► babytext.evaluate
 ```
-
-What each stage trains and freezes is in the root README's Training section. Stage 4 (M4) is a stretch goal in the
-proposal (§6.3). B3 (`models.symbolic_agent`) is trained by `bc_symbolic.py` with the same demonstrations, seeds,
-batches and `config.BC` settings as stages 1-3 (`python -m training.train --model b3`).
 
 ## Design choices
 
-- **Expert first, RL second.** Rewards in this environment are sparse (one reward at the end of a successful
-  episode), so learning from reward alone with an SLM in the loop would be slow. Behaviour cloning gives a working
-  policy cheaply; RL then improves on it and corrects compounding errors.
-- **Whole episodes, not shuffled steps.** The SLM policy carries memory across time, so behaviour cloning replays each
-  demonstration in time order (truncated back-propagation through time), using the `episode` and `t` arrays.
+- **Behaviour cloning only.** Expert demonstrations give a working policy cheaply; reinforcement learning is out of
+  scope (proposal §4, §14).
+- **One loop for every trained condition.** P and B3 differ in their model and data class only, so a difference in
+  results cannot come from a difference in training.
+- **Cache once, sweep cheaply.** The LLM is frozen and prompts are fixed text, so the head's inputs never change; the
+  layer x pooling x depth sweep needs no LLM pass until validation.
 - **Prefix datasets.** Using the first N seeds of a split makes every smaller dataset a prefix of a larger one, so the
-  demonstration-count curves (`config.TRAIN.demo_counts`) need no extra collection.
+  demonstration-count curves (`config.TRAIN.demo_counts`) need no extra collection or caching.
 - **Model selection on `val` only**; `test*` is evaluated once at the end (proposal §6.5).
 
 ## Limitations
 
-- **Demonstrations carry no per-step reward.** Only the final `reward` and `success` per episode are stored. The shaped
-  immediate reward must be recomputed by replaying `(task, eval_set, seed, actions)`, and needs the agent's position,
-  which `babytext` does not put in `info` yet.
-- **Demonstrations are short and optimal.** The expert needs ~6 steps (easy tier) or ~12 (hard tier), so (a) memory rarely
-  has to span long in stage 1-3 data, and (b) the policy never sees how to recover from a mistake. Stage 4 and optional
-  DAgger (`babytext.ExpertPolicy` with `action_taken`) address (b).
-- **No thinking traces.** The expert gives actions, not reasoning, so behaviour cloning cannot teach the SLM's thinking
-  mode, and it is too slow inside PPO; it is not used (proposal §14).
-- **Cost of training through the SLM.** The SLM's inputs depend on the learned memory and its low-level layers are tuned,
-  so hidden states cannot be cached once (as the submitted proposal planned). Every update runs the SLM forward and backward;
-  stage 4 also runs it inside the rollout loop.
-- **The M2-randlm LM is regenerated, not stored.** Checkpoints skip the frozen LM, so a random one is rebuilt from
-  `slm_init_seed` on load. Its fingerprint is saved and checked: loading with a different torch / transformers
-  version that draws other weights raises an error instead of silently using a different LM.
-- **Not implemented yet:** DAgger relabelling (`config.TRAIN.dagger_rounds` is unused), a KL penalty towards the BC
-  policy during PPO, and batched validation (`training.common.validate` runs one environment at a time).
+- **Demonstrations are short and optimal.** The expert needs about 6 steps (easy tier) or 12 (hard tier), and the
+  policy never sees how to recover from a mistake. DAgger (`babytext.ExpertPolicy` with `action_taken`) would address
+  it; it is not implemented (`config.TRAIN.dagger_rounds` is unused).
+- **Validation is sequential.** `training.common.validate` runs one environment at a time; batched evaluation would
+  make the head's val episodes several times faster.
+- **Attention pooling needs large caches** (about 14-28 GB per layer per tier), which is why it runs at two layers only.

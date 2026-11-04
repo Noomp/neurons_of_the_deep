@@ -44,9 +44,9 @@ from babytext import make_env, get_seeds, ExpertPolicy, run_episode, evaluate
 
 env = make_env("goto", "train")                     # task in babytext.TASKS
 obs, info = env.reset(seed=get_seeds("goto", "train", 1)[0])
-obs["image"], obs["direction"]                      # symbolic view: input to the SLM policy's encoder and to B3
-obs["mission"]                                      # goal text: read by the SLM
-print(obs["prompt"])                                # GLAM prompt: input to the prompted-SLM baselines B1 / B2
+obs["image"], obs["direction"]                      # symbolic view (input to B3) and heading (unused by the models)
+obs["mission"]                                      # goal text: read word by word by B3
+print(obs["prompt"])                                # GLAM prompt: input to the frozen LLM (B1, B2 and the action head)
 obs, reward, terminated, truncated, info = env.step(2)   # "go forward"
 
 # Any callable obs -> action index is a policy:
@@ -85,11 +85,11 @@ The task stays observable from the prompt: once the first object is picked up, e
 Each observation dict carries:
 
 - `image` (7, 7, 3) uint8: per cell (object index, colour index, state), MiniGrid's encoding; the agent sits at cell
-  (3, 6), facing up the grid. Input to the spatial encoder of the SLM policy and to B3;
-- `direction`: absolute heading 0-3;
-- `mission`: the goal string, the text the SLM policy reads;
+  (3, 6), facing up the grid. Input to B3;
+- `direction`: absolute heading 0-3 (no model uses it: the prompt never gives it);
+- `mission`: the goal string, which B3 reads word by word;
 - `descriptions`: BabyAI-Text descriptions, e.g. `You see a red ball 1 step left and 2 steps forward`, `You see a wall 3 steps right`, `You carry a grey key`;
-- `prompt`: the GLAM prompt (goal, last 3 observations, last 2 actions), used by the prompted-SLM baselines.
+- `prompt`: the GLAM prompt (goal, last 3 observations, last 2 actions), the input of every LLM-based condition (B1, B2 and the action head).
 
 The text is a deterministic function of `image`, so the text and symbolic views contain the same information.
 `info` additionally gives `goal`, the (type, colour) of each object named in the instruction in mission order, and
@@ -269,9 +269,9 @@ re-collect demos afterwards. For a one-off change, pass overrides to `make_env`,
 
 ## Limitations
 
-- **Sparse reward only.** The reward is non-zero only on the final step of a successful episode. The SLM policy's
-  *immediate* reward has to be shaped in `training/`, and the agent's position (needed for distance-based shaping) is
-  not in `info`; it is only reachable through `env.unwrapped.agent_pos`. Adding it to `info` is the planned fix.
+- **Sparse reward only.** The reward is non-zero only on the final step of a successful episode, and the agent's
+  position (needed for distance-based shaping) is not in `info`; it is only reachable through
+  `env.unwrapped.agent_pos`. The project trains by behaviour cloning only, so neither is needed.
 - **`test_nonce` changes text only.** The renamer rewrites the mission and descriptions; `image` keeps MiniGrid's object
   and colour codes. A model that reads the scene from `image` sees an unchanged room and is only tested on whether it
   can still interpret the renamed mission.

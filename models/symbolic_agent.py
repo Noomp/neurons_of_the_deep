@@ -1,8 +1,8 @@
 """B3: the non-LLM symbolic agent (proposal section 6.3).
 
 A small frame-stacked CNN trained on MiniGrid's symbolic grid observation with
-the same demonstrations, and the same behaviour cloning settings, as the SLM
-policy's stages 1-3 (``python -m training.train --model b3``, see
+the same demonstrations, and the same behaviour cloning protocol, as the
+action head on the frozen LLM (``python -m training.train --model b3``, see
 ``training.bc_symbolic``). Its inputs match what the LLM prompt contains:
 
 * the last N egocentric 7x7 views, oldest first (N = config.ENV.prompt_num_obs,

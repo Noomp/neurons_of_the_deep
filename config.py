@@ -13,18 +13,20 @@ instance that the code reads:
 * ``EVAL``: evaluation sizes;
 * ``TRAIN``: the training protocol from the proposal;
 * ``SYMBOLIC``: sizes of the B3 symbolic agent;
-* ``SLM``: sizes of the SLM policy (encoder, memory, attention, backbone);
-* ``BC``: behaviour cloning settings (training stages 1-3);
-* ``PPO``: reinforcement learning settings (training stage 4).
+* ``LLM``: the frozen LLM shared by B1, B2 and the action head;
+* ``HEAD``: the action head (P): read-out layer, pooling, MLP size;
+* ``PROMPTED``: the zero-shot baselines B1 and B2;
+* ``BC``: behaviour cloning settings, shared by B3 and the action head.
 
 Changing ``ENV`` or ``EVAL_SETS`` changes the generated episodes: re-run
-``python -m training.tools.collect_demos`` afterwards.
-``training.tools.collect_demos`` stores ``as_dict()`` next to the demos so every dataset
+``python -m training.tools.collect_demos`` afterwards; changing ``LLM`` (or
+``HEAD.sweep_layers``) changes the hidden-state cache: re-run
+``python -m training.tools.cache_hidden``. ``training.tools.collect_demos`` stores ``as_dict()`` next to the demos so every dataset
 records the settings that produced it.
 
 One-off overrides do not need edits here, e.g.
-``make_env("goto", "train", num_dists=4)``. Training runs change ``SLM``,
-``BC``, ``PPO``, ``SYMBOLIC`` and ``TRAIN`` per run with
+``make_env("goto", "train", num_dists=4)``. Training runs change ``HEAD``,
+``BC``, ``SYMBOLIC`` and ``TRAIN`` per run with
 ``python -m training.train --set section.field=value`` (see training/README.md):
 the instances below are frozen and imported at load time, so reassigning
 them at run time does not reach the code.
@@ -120,6 +122,7 @@ class DataConfig:
     n_train_demos: int = 2000
     n_val_demos: int = 200
     demos_dir: Path = Path("data/demos")
+    hidden_dir: Path = Path("data/hidden")  # cached LLM hidden states of the demos
     outputs_dir: Path = Path("outputs")
 
 
@@ -140,7 +143,7 @@ EVAL = EvalConfig()
 @dataclass(frozen=True)
 class TrainConfig:
     """Training protocol shared by every trained condition (proposal 6.4-6.5).
-    Optimiser settings live in ``BC`` and ``PPO``; model sizes in ``SLM``."""
+    Optimiser settings live in ``BC``; model sizes in ``HEAD`` and ``SYMBOLIC``."""
 
     # 6.5: at least 3 training seeds per configuration, reported as mean with 95% CI.
     seeds: tuple[int, ...] = (0, 1, 2)
@@ -176,104 +179,87 @@ SYMBOLIC = SymbolicAgentConfig()
 
 
 @dataclass(frozen=True)
-class SLMPolicyConfig:
-    """Sizes of the SLM policy (models/slm_policy). See models/README.md.
+class LLMConfig:
+    """The frozen LLM shared by every LLM-based condition (B1, B2 and the action head P).
 
-    The policy is: spatial encoder -> write-sparse slot memory -> space-time
-    attention -> backbone (a small MLP in stage 1, the SLM from stage 2) ->
-    action and value heads.
+    Changing it invalidates the hidden-state cache: re-run
+    ``python -m training.tools.cache_hidden`` afterwards.
     """
 
-    # Spatial encoder: per-cell embedding, then 3x3 convolutions.
-    feature_dim: int = 64  # d, features per grid cell
-    num_conv_layers: int = 3
-    # Add an embedding of obs["direction"] (the compass heading) to every cell.
-    # Off: B3 and the GLAM prompt get no heading, and every compared model must
-    # see the same inputs. Only for a separate experiment measuring its effect.
-    use_direction: bool = False
-
-    # Mission encoder (word GRU, independent of the SLM so the memory path never runs it).
-    word_dim: int = 32
-    mission_dim: int = 128
-
-    # Write-sparse slot memory (the "modified GRU"; report section 4).
-    memory_slots: int = 8  # K; 0 disables the memory (ablation)
-    # Initial bias of the write gate: sigmoid(-2) ~ 0.12, i.e. "do not save" by default.
-    write_gate_bias: float = -2.0
-    # "soft": g in (0, 1), fully differentiable. "hard": 0/1 forward with a
-    # straight-through gradient (Skip-RNN style), so memory really stays untouched.
-    write_mode: str = "soft"
-
-    # Space-time attention: H read heads over (K + 1) x 49 (time, cell) positions.
-    read_heads: int = 4
-
-    # Backbone. "readout": small MLP on the read-outs (stage 1, model M1).
-    # "slm": Hugging Face causal LM reading the mission text + H soft tokens.
-    backbone: str = "readout"
-    readout_hidden: int = 256
-    slm_name: str = "Qwen/Qwen3-0.6B"
-    slm_dtype: str = "bfloat16"
-    # False is the "M2-randlm" control: slm_name's architecture and tokenizer
-    # with random weights, drawn with slm_init_seed (independent of the run's
-    # --seed). Checkpoints do not store them; load_model regenerates them from
-    # the seed and checks a fingerprint saved with the checkpoint.
-    slm_pretrained: bool = True
-    slm_init_seed: int = 0
-    # Layers 0 .. low_level_layers-1 get LoRA from stage 3; the rest stay frozen.
-    low_level_layers: int = 10
-    lora_rank: int = 8
-    lora_targets: tuple[str, ...] = ("q_proj", "v_proj")
-    # Read the action from the output of this many layers (None = all). Layers
-    # above it are dropped, so a smaller value is also cheaper.
-    readout_layer: int | None = None
-    gradient_checkpointing: bool = True
+    name: str = "Qwen/Qwen3-0.6B"  # Hugging Face id or local folder; 28 layers, width 1024
+    dtype: str = "bfloat16"
+    cache_batch: int = 32  # prompts per forward pass when caching hidden states
 
 
-SLM = SLMPolicyConfig()
+LLM = LLMConfig()
+
+
+@dataclass(frozen=True)
+class HeadConfig:
+    """The action head (P): one pooled hidden state of the frozen LLM -> MLP -> 6 action logits."""
+
+    # Read the output of this LLM layer (1 .. 28; 28 is the final layer, after the final norm).
+    layer: int = 28
+    # How the ~300 token vectors of that layer become one: "last" token, "mean"
+    # over tokens, or learned "attention" (needs cached token sequences).
+    pooling: str = "last"
+    hidden_layers: int = 1  # MLP hidden layers (1 or 2)
+    hidden_dim: int = 256
+    attention_dim: int = 64  # key size of the learned attention pooling
+    # Layers whose last-token and mean vectors are cached and swept (RQ2):
+    # every 4th layer and the final one.
+    sweep_layers: tuple[int, ...] = (4, 8, 12, 16, 20, 24, 28)
+
+
+HEAD = HeadConfig()
+
+
+@dataclass(frozen=True)
+class PromptedConfig:
+    """The zero-shot baselines B1 (generate and map) and B2 (log-probability scoring)."""
+
+    max_new_tokens: int = 8  # B1: greedy generation length
+    # B1: sentence-embedding model that maps generated text to the nearest action (Huang et al., 2022).
+    mapping_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # B2: score each action by its mean token log-probability (length normalisation, as in TWOSOME).
+    length_normalise: bool = True
+
+
+PROMPTED = PromptedConfig()
 
 
 @dataclass(frozen=True)
 class BCConfig:
-    """Behaviour cloning on whole demonstration episodes (training stages 1-3)."""
+    """Behaviour cloning, shared by every trained condition (B3 and the action head).
 
-    epochs: int = 20
-    batch_episodes: int = 32  # episodes per batch (full back-propagation through time)
-    lr: float = 3e-4
+    One batch is every step of ``batch_episodes`` demo episodes. Each run keeps
+    the epoch with the lowest val cross-entropy (on the val demos) and measures
+    greedy val success once on it; configurations are compared by that success.
+    Training stops early once val cross-entropy has stopped improving, and the
+    learning rate decays when it stalls, so ``epochs`` is only an upper bound.
+    """
+
+    epochs: int = 200  # upper bound; early stopping ends runs after ~15-40 epochs
+    batch_episodes: int = 32  # episodes per batch; the batch holds all their steps
+    # Initial learning rate. 1e-2 gave the lowest (or tied lowest) val cross-entropy for
+    # both B3 and the head (goto, 4 Nov; 3e-4 under-trained both); see training/README.md.
+    lr: float = 1e-2
     weight_decay: float = 0.0
     grad_clip: float = 1.0
-    # Penalty on the mean write gate: makes memory writes rare.
-    write_penalty: float = 1e-2
-    # Validation: success rate on this many val episodes after each epoch (0 = loss only).
+    # Learning-rate decay: "plateau" multiplies the lr by lr_factor after lr_patience
+    # epochs without a lower val cross-entropy; "cosine" anneals it to min_lr over
+    # ``epochs``; "none" keeps it constant.
+    lr_decay: str = "plateau"
+    lr_factor: float = 0.5
+    lr_patience: int = 2
+    min_lr: float = 1e-6
+    # Early stopping: stop after this many epochs without a lower val cross-entropy (0 = never).
+    patience: int = 6
+    # Greedy success on this many val episodes per task, measured once on the selected epoch (0 = skip).
     val_episodes: int = 100
 
 
 BC = BCConfig()
-
-
-@dataclass(frozen=True)
-class PPOConfig:
-    """Recurrent PPO in the environment (training stage 4)."""
-
-    total_steps: int = 200_000  # environment steps over all parallel envs
-    num_envs: int = 16
-    rollout_len: int = 128  # steps per env per update; one recurrent sequence per env
-    epochs: int = 4
-    minibatch_envs: int = 4  # sequences per minibatch
-    lr: float = 1e-4
-    grad_clip: float = 0.5
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_eps: float = 0.2
-    value_coef: float = 0.5
-    entropy_coef: float = 0.01
-    write_penalty: float = 1e-2
-    # Potential-based shaping weight (0 = environment reward only).
-    shaping: float = 0.1
-    val_every: int = 10  # updates between validation runs
-    val_episodes: int = 100
-
-
-PPO = PPOConfig()
 
 
 def as_dict() -> dict:
@@ -298,8 +284,9 @@ def as_dict() -> dict:
             "eval": asdict(EVAL),
             "train": asdict(TRAIN),
             "symbolic": asdict(SYMBOLIC),
-            "slm": asdict(SLM),
+            "llm": asdict(LLM),
+            "head": asdict(HEAD),
+            "prompted": asdict(PROMPTED),
             "bc": asdict(BC),
-            "ppo": asdict(PPO),
         }
     )
