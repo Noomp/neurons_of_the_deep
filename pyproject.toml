@@ -20,11 +20,11 @@ dependencies = [
 dev = ["pytest", "pygame-ce"]
 # Model dependencies. With conda, PyTorch comes from environment.yml (pytorch-gpu) and
 # `pip install -e ".[models]"` only adds transformers; with a venv, this extra installs both.
-models = ["torch>=2.4", "transformers>=4.51"]
+models = ["torch>=2.4", "transformers>=4.51", "peft>=0.13"]
 
 [tool.setuptools]
 # babytext: the environment (with its tools); models: the policies; training: datasets and training.
-packages = ["babytext", "babytext.tools", "models", "training", "training.tools"]
+packages = ["babytext", "babytext.tools", "models", "models.slm_policy", "training", "training.tools"]
 # Root-level config.py (all project settings) is importable as `config`.
 py-modules = ["config"]
 

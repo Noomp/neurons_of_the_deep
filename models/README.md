@@ -6,7 +6,7 @@ model can be loaded and evaluated without the training code.
 | module | status | what |
 |---|---|---|
 | [`symbolic_agent.py`](symbolic_agent.py) | done (untrained) | **B3**, the non-LLM baseline: frame-stacked CNN + FiLM on the symbolic grid |
-| `slm_policy.py` | specified here, not implemented | **the main model**: SLM with spatial encoder, gated memory and space-time attention |
+| [`slm_policy/`](slm_policy/__init__.py) | done (untrained) | **the main model**: SLM with spatial encoder, write-sparse slot memory and space-time attention |
 | `prompted.py` | not implemented | **B1 / B2**: the same SLM prompted with the GLAM prompt (generate-and-map, log-probability scoring) |
 
 Where the original design brief (kept in the root README's [Training](../README.md#training) section) was ambiguous,
@@ -21,8 +21,8 @@ pip install -e ".[models]"     # venv: torch + transformers;  conda: torch alrea
 python -m pytest tests/test_symbolic_agent.py   # skipped automatically when torch is not installed
 ```
 
-LoRA adaptation (training stage 3) will also need `peft`; add it to the `models` extra in `pyproject.toml` (and to
-`environment.yml`) when that code lands.
+LoRA adaptation (training stages 3-4) needs `peft`, now in the `models` extra (conda: `pip install peft`).
+`python -m pytest tests/test_slm_policy.py` tests the SLM policy with a tiny random Qwen3, so nothing is downloaded.
 
 ## Public API
 
@@ -32,7 +32,7 @@ Each module lists its public names in `__all__`.
 | module | public names |
 |---|---|
 | `models.symbolic_agent` | `SymbolicAgent`, `SymbolicPolicy`, `SymbolicHistory`, `stack_demo_steps`, `MissionTokenizer`, `NO_ACTION` |
-| `models.slm_policy` (planned) | `SLMPolicy` (`forward(step_inputs, memory) -> (action_logits, value, new_memory)`), `initial_memory(batch_size)`, `parameter_groups(model)`, `SLMAgentPolicy`, `save_model`, `load_model` |
+| `models.slm_policy` | `SLMPolicy` (`forward(obs, memory) -> PolicyOutput`, `initial_memory(batch_size)`), `SLMAgentPolicy`, `Observations`, `observations_from_env`, `PolicyOutput`, `MemoryState`, `parameter_groups`, `GROUPS`, `save_model`, `load_model`, `load_checkpoint_info`, `Backbone`, `ReadoutBackbone`, `SLMBackbone` |
 
 Every model reaches the environment the same way: a policy object, `policy(obs) -> action index`, with `reset(env)`
 clearing any per-episode state, handed to `babytext.run_episode` / `babytext.evaluate`:
@@ -57,7 +57,23 @@ MLP with the mission and previous-action embeddings → 6 action logits. Sizes a
 `stack_demo_steps` builds training inputs from a demo file and `SymbolicHistory` builds the same inputs during a
 rollout. Architecture figure: [report/figures/symbolic_agent_architecture.svg](../report/figures/symbolic_agent_architecture.svg).
 
-## The SLM policy (`slm_policy.py`, planned)
+## The SLM policy (`slm_policy/`)
+
+Design, feasibility assessment and the comparison with a plain GRU: [report/architecture/architecture_feasibility.pdf](../report/architecture/architecture_feasibility.pdf).
+Implemented as described below, with two changes. (1) The memory is a *write-sparse* slot memory: the gate starts
+biased towards "do not write", a write penalty is added to the loss, `write_mode="hard"` gives 0/1 writes, and each slot
+records its age and fill level. (2) The mission is encoded by a word GRU for the memory and the attention, so the SLM is
+never inside the recurrence and runs once on all steps of a training sequence. The thinking mode is not implemented.
+
+| file | contents |
+|---|---|
+| `inputs.py` | `Observations`, the (B, T) input block; `observations_from_env` |
+| `encoders.py` | `TimeEncoding`, `ViewEncoder` (spatial encoder), `MissionEncoder` |
+| `memory.py` | `MemoryState`, `SlotMemory` (write gate + slot address) |
+| `attention.py` | `SpaceTimeAttention`: (K+1) x 49 weights per head, H read-outs |
+| `backbones.py` | `Backbone` interface, `ReadoutBackbone` (stage 1), `SLMBackbone` (soft tokens, LoRA, layer truncation) |
+| `policy.py` | `SLMPolicy`, `parameter_groups`, `save_model` / `load_model` |
+| `agent.py` | `SLMAgentPolicy` for `babytext.evaluate` |
 
 One forward pass per environment step *t*:
 
@@ -94,7 +110,7 @@ memory gate (after acting):
 
 ### Hyperparameters
 
-To be added to `config.py` as an `SLM` section next to `SYMBOLIC`, with these starting values:
+In `config.SLM` (`SLMPolicyConfig`). The main ones:
 
 | name | meaning | starting value |
 |---|---|---|
@@ -102,12 +118,13 @@ To be added to `config.py` as an `SLM` section next to `SYMBOLIC`, with these st
 | `feature_dim` (d) | features per cell | 64 |
 | `num_conv_layers`, kernel | depth and kernel of the spatial encoder | 3, 3x3 |
 | `read_heads` (H) | number of soft tokens given to the SLM | 4 |
-| `time_encoding` | `learned` or `sinusoidal` | `learned` |
-| `backbone` | Hugging Face model id (replaces `config.TRAIN.backbone`, which still names the proposal's Qwen2.5) | `Qwen/Qwen3-0.6B` |
+| `write_gate_bias`, `write_mode` | initial gate bias ("rarely write") and `soft` / `hard` (straight-through) writes | -2.0, `soft` |
+| `backbone` | `readout` (MLP, stage 1) or `slm` (stages 2-4) | `readout` |
+| `slm_name`, `slm_dtype` | Hugging Face model id and precision | `Qwen/Qwen3-0.6B`, `bfloat16` |
 | `low_level_layers` | how many of the first SLM layers count as low-level (tuned from stage 3) | 10 of 28 |
 | `lora_rank`, `lora_targets` | LoRA on the low-level layers | 8, attention q/v projections |
-| `action_readout` | `head` (linear head, one pass) or `score` (log-probability of the six action strings) | `head` |
-| `thinking_budget` | max thinking tokens generated before the action; 0 disables thinking | 0 during training |
+| `readout_layer` | read the action from this layer's output; higher layers are dropped (None = all) | None |
+| `gradient_checkpointing` | recompute SLM activations in the backward pass (needed to fit an 8 GB GPU) | True |
 
 ### Design choices
 

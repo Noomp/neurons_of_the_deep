@@ -1,11 +1,12 @@
 # training
 
-Builds the training data and (planned) trains the models in [`models/`](../models/README.md): behaviour cloning on
+Builds the training data and trains the models in [`models/`](../models/README.md): behaviour cloning on
 expert demonstrations, then reinforcement learning with immediate and delayed rewards. Depends on `babytext`, `models`
 and `config`; nothing imports from it.
 
-Status: **dataset tools done**; rewards and the training stages are **not implemented yet**. The stages are specified
-in the [Training section of the root README](../README.md#training).
+Status: **dataset tools, rewards and all four training stages done** (untrained so far). The stages are specified in the
+[Training section of the root README](../README.md#training); the feasibility assessment and compute estimates are in
+[report/architecture/architecture_feasibility.pdf](../report/architecture/architecture_feasibility.pdf).
 
 ## Install
 
@@ -24,6 +25,28 @@ python -m training.tools.dataset_stats                       # charts of demos a
 
 `data/` and `outputs/` are git-ignored and can always be regenerated. `data/demos/summary.json` records the full
 `config` each dataset was generated with; after changing `config.ENV` or `config.EVAL_SETS`, re-collect.
+
+## Training the SLM policy
+
+```bash
+python -m training.train --stage 1 --tasks goto pickup --out outputs/runs/m1          # CPU is enough
+python -m training.train --stage 2 --tasks goto pickup --init outputs/runs/m1/best.pt --out outputs/runs/m2
+python -m training.train --stage 3 --tasks goto pickup --init outputs/runs/m2/best.pt --out outputs/runs/m3
+python -m training.train --stage 4 --tasks goto pickup --init outputs/runs/m3/best.pt --out outputs/runs/m4
+```
+
+Each run writes `run.json` (arguments + full config), `metrics.jsonl`, `last.pt` and `best.pt` (by val success).
+Optimiser settings are in `config.BC` and `config.PPO`; what each stage trains is the table in `training/stages.py`.
+
+| module | role |
+|---|---|
+| `stages.py` | `STAGES` (backbone, algorithm, learning-rate scale per parameter group) and `make_optimizer` |
+| `demos.py` | demonstration files -> padded (B, T) episode batches |
+| `bc.py` | behaviour cloning (stages 1-3) |
+| `vec_env.py` | the environment side of RL: N envs, auto-reset on fresh train seeds, step counters, shaping potential |
+| `rewards.py` | potential-based shaping and GAE, no environment code |
+| `ppo.py` | recurrent PPO (stage 4): one sequence per env per rollout, memory stored at its start |
+| `train.py` | command line |
 
 ## Public API
 
@@ -45,10 +68,10 @@ training.tools.collect_demos ─► babytext.data.save_demos ─► data/demos/<
           babytext.data.load_symbolic + load_episodes ◄───────────┘
                      │ cut into episodes by `episode`, ordered by `t`
                      ▼
- stage 1  behaviour cloning, no SLM (encoder, memory, attention, small action head)                   planned
- stage 2  behaviour cloning with the SLM frozen (adds adapter + action head on the SLM)               planned
- stage 3  behaviour cloning + LoRA on the SLM's low-level layers                                      planned
- stage 4  recurrent PPO in the environment, immediate + delayed rewards                               planned
+ stage 1  behaviour cloning, no SLM (encoder, memory, attention, small action head)                   done   
+ stage 2  behaviour cloning with the SLM frozen (adds adapter + action head on the SLM)               done   
+ stage 3  behaviour cloning + LoRA on the SLM's low-level layers                                      done   
+ stage 4  recurrent PPO in the environment, immediate + delayed rewards                               done   
                      │
                      ▼
  SLMAgentPolicy(model) ─► babytext.evaluate(policy, task, "val", n) for selection; test* once at the end
@@ -81,5 +104,5 @@ with the same demonstrations, seeds and DAgger settings as stage 1-3 (`config.TR
 - **Cost of training through the SLM.** The SLM's inputs depend on the learned memory and its low-level layers are tuned,
   so hidden states cannot be cached once (as the proposal planned). Every update runs the SLM forward and backward;
   stage 4 also runs it inside the rollout loop.
-- **`config.TRAIN` still describes the proposal's frozen-LLM sweep** (`layer_stride`, `poolings`, Qwen2.5 backbone). Its
-  seeds, demonstration counts and DAgger settings still apply; the rest should be replaced when the training code lands.
+- **Not implemented yet:** DAgger relabelling (`config.TRAIN.dagger_rounds` is unused), a KL penalty towards the BC
+  policy during PPO, and batched validation (`training.common.validate` runs one environment at a time).

@@ -1,4 +1,4 @@
-"""Training: building datasets and (planned) training the models in ``models``.
+"""Training: building datasets and training the models in ``models``.
 
 Depends on ``babytext`` (to roll out the expert and the policy), ``models``
 (the networks being trained) and ``config``. Nothing in ``babytext`` or
@@ -15,11 +15,15 @@ Demonstration files are written and read with ``babytext.data``
 (``save_demos``, ``load_episodes``, ``load_steps``, ``load_symbolic``),
 which belongs to the environment because it defines the episode format.
 
-Planned, not yet implemented (see training/README.md)
-    immediate (shaped) and delayed rewards; stage 1-3 behaviour cloning on
-    whole demonstration episodes; stage 4 recurrent PPO; optional DAgger
-    relabelling with ``babytext.ExpertPolicy(obs, action_taken=...)``;
-    demonstration-count learning curves (``config.TRAIN.demo_counts``).
+Training the SLM policy (``python -m training.train --stage N``)
+    ``training.stages``   ``STAGES`` table and ``make_optimizer`` (freezing per stage)
+    ``training.bc``       ``train_bc``, ``bc_loss`` (stages 1-3)
+    ``training.ppo``      ``train_ppo``, ``collect_rollout``, ``ppo_update`` (stage 4)
+    ``training.rewards``  ``shaped_reward``, ``compute_gae``
+    ``training.vec_env``  ``VecTextEnv``, ``goal_potential``: all environment plumbing for RL
+    ``training.demos``    ``load_demo_episodes``, ``collate``, ``iterate_batches``
+
+Not implemented yet: DAgger relabelling, a KL penalty towards the BC policy.
 """
 
 __all__: list[str] = []

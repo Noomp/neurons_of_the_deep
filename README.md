@@ -19,8 +19,8 @@ limitations).
 | section | status | contents | README |
 |---|---|---|---|
 | `babytext/` | done | the environment: BabyAI-Text-style gridworld, eval sets and seeds, expert / random policies, rollout and evaluation, demonstration file format, visualisation, environment tools and tests | [babytext](babytext/README.md) |
-| `models/` | B3 done, SLM policy specified | the policies: B3 symbolic agent; the SLM policy and prompted-SLM baselines to come | [models](models/README.md) |
-| `training/` | dataset tools done | demonstration collection and statistics; rewards, behaviour cloning and RL to come | [training](training/README.md) |
+| `models/` | B3 and SLM policy done (untrained) | the policies: B3 symbolic agent, the SLM policy (`slm_policy/`); prompted-SLM baselines to come | [models](models/README.md) |
+| `training/` | done (untrained) | demonstration collection and statistics; rewards, behaviour cloning (stages 1-3), recurrent PPO (stage 4) | [training](training/README.md) |
 
 ```
 grp_proj/
@@ -34,7 +34,7 @@ grp_proj/
 ├── models/              the policies: symbolic_agent.py (B3), README.md
 ├── training/            datasets and training: tools/, README.md
 ├── tests/               model and training tests
-├── report/              figures for the report
+├── report/              figures; architecture/ holds the design + feasibility note (LaTeX + PDF)
 └── data/, outputs/      generated demos, figures and results (gitignored)
 ```
 
@@ -99,8 +99,10 @@ All settings live in [config.py](config.py) (importable as `config`); edit the d
 | `EVAL_SETS` | the six eval sets: seed split and how each one's levels differ from `ENV` |
 | `DATA` | demo counts per task, data and output folders |
 | `EVAL` | episodes per evaluation |
-| `TRAIN` | training protocol: seeds, demo-count curve, DAgger. Its backbone / layer / pooling fields still describe the proposal's frozen-LLM sweep and will be replaced by the SLM policy's settings |
+| `TRAIN` | training protocol: seeds, demo-count curve, DAgger |
 | `SYMBOLIC` | sizes of the B3 symbolic agent |
+| `SLM` | sizes of the SLM policy: encoder, memory, attention, backbone, LoRA |
+| `BC`, `PPO` | optimiser and algorithm settings of training stages 1-3 and 4 |
 
 Changing `ENV` or `EVAL_SETS` changes the generated episodes, so re-collect demos afterwards.
 `data/demos/summary.json` records the full config each dataset was generated with.
@@ -130,7 +132,7 @@ python -m babytext.tools.play --task goto --eval-set test_nonce   # play by hand
 
 ### Architecture
 
-Per environment step *t* the model runs once (full diagram and shapes in the [models README](models/README.md#the-slm-policy-slm_policypy-planned)):
+Per environment step *t* the model runs once (full diagram and shapes in the [models README](models/README.md#the-slm-policy-slm_policy); design and feasibility in [report/architecture/architecture_feasibility.pdf](report/architecture/architecture_feasibility.pdf)):
 
 1. **Spatial encoder.** MiniGrid's 7x7 symbolic view (`obs["image"]`) is embedded per cell and passed through
    3x3 convolutions, giving one feature vector per cell. Direction and a **time encoding** of the step index *t* are added.
@@ -189,8 +191,8 @@ during stages 1-3 (`thinking_budget = 0`) because demonstrations contain no reas
 
 **Chosen on `val`** (not learned): memory slots K (8), feature width d (64), read heads H (4), number of low-level
 SLM layers (10), LoRA rank (8), learning rate per group, shaping weight λ, discount γ, GAE λ, PPO clip and entropy
-coefficient, thinking budget, number of demonstrations. Values in brackets are the starting points; they will live in
-`config.py` (a new `SLM` section, plus optimiser and RL settings in `TRAIN`).
+coefficient, number of demonstrations. Values in brackets are the starting points; they live in `config.SLM`,
+`config.BC` and `config.PPO`. The thinking mode is not implemented (see the feasibility note).
 
 Assumptions made where the original brief was ambiguous (what "learn the weights" of the reward means, and whether
 memory should get pickier over the episode or over training) are listed in the

@@ -12,7 +12,10 @@ instance that the code reads:
 * ``DATA``: demonstration counts and file locations;
 * ``EVAL``: evaluation sizes;
 * ``TRAIN``: the training protocol from the proposal;
-* ``SYMBOLIC``: sizes of the B3 symbolic agent.
+* ``SYMBOLIC``: sizes of the B3 symbolic agent;
+* ``SLM``: sizes of the SLM policy (encoder, memory, attention, backbone);
+* ``BC``: behaviour cloning settings (training stages 1-3);
+* ``PPO``: reinforcement learning settings (training stage 4).
 
 Changing ``ENV`` or ``EVAL_SETS`` changes the generated episodes: re-run
 ``python -m training.tools.collect_demos`` (and any hidden-state caching) afterwards.
@@ -132,20 +135,13 @@ EVAL = EvalConfig()
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """Training protocol from the proposal (sections 6.2-6.5). Add optimiser
-    settings (learning rate, batch size, epochs, ...) here with the training code."""
+    """Training protocol shared by every trained condition (proposal 6.4-6.5).
+    Optimiser settings live in ``BC`` and ``PPO``; model sizes in ``SLM``."""
 
     # 6.5: at least 3 training seeds per configuration, reported as mean with 95% CI.
     seeds: tuple[int, ...] = (0, 1, 2)
     # 6.4: sample-efficiency curves; each count uses the first k demo episodes.
     demo_counts: tuple[int, ...] = (100, 250, 500, 1000, 2000)
-    # 6.2: small instruction-tuned LLM, frozen, half precision (the proposal
-    # names Qwen2.5 as an example; confirm before caching hidden states).
-    backbone: str = "Qwen/Qwen2.5-0.5B-Instruct"
-    dtype: str = "bfloat16"
-    # 6.3: read every k-th layer plus the final layer; pooling variants.
-    layer_stride: int = 4
-    poolings: tuple[str, ...] = ("last", "mean", "attention")
     # 6.4: DAgger only if behaviour cloning drifts (0 = off). Every trained
     # condition, including the symbolic baseline, must use the same values.
     dagger_rounds: int = 0
@@ -175,6 +171,97 @@ class SymbolicAgentConfig:
 SYMBOLIC = SymbolicAgentConfig()
 
 
+@dataclass(frozen=True)
+class SLMPolicyConfig:
+    """Sizes of the SLM policy (models/slm_policy). See models/README.md.
+
+    The policy is: spatial encoder -> write-sparse slot memory -> space-time
+    attention -> backbone (a small MLP in stage 1, the SLM from stage 2) ->
+    action and value heads.
+    """
+
+    # Spatial encoder: per-cell embedding, then 3x3 convolutions.
+    feature_dim: int = 64  # d, features per grid cell
+    num_conv_layers: int = 3
+
+    # Mission encoder (word GRU, independent of the SLM so the memory path never runs it).
+    word_dim: int = 32
+    mission_dim: int = 128
+
+    # Write-sparse slot memory (the "modified GRU"; report section 4).
+    memory_slots: int = 8  # K; 0 disables the memory (ablation)
+    # Initial bias of the write gate: sigmoid(-2) ~ 0.12, i.e. "do not save" by default.
+    write_gate_bias: float = -2.0
+    # "soft": g in (0, 1), fully differentiable. "hard": 0/1 forward with a
+    # straight-through gradient (Skip-RNN style), so memory really stays untouched.
+    write_mode: str = "soft"
+
+    # Space-time attention: H read heads over (K + 1) x 49 (time, cell) positions.
+    read_heads: int = 4
+
+    # Backbone. "readout": small MLP on the read-outs (stage 1, model M1).
+    # "slm": Hugging Face causal LM reading the mission text + H soft tokens.
+    backbone: str = "readout"
+    readout_hidden: int = 256
+    slm_name: str = "Qwen/Qwen3-0.6B"
+    slm_dtype: str = "bfloat16"
+    # Layers 0 .. low_level_layers-1 get LoRA from stage 3; the rest stay frozen.
+    low_level_layers: int = 10
+    lora_rank: int = 8
+    lora_targets: tuple[str, ...] = ("q_proj", "v_proj")
+    # Read the action from the output of this many layers (None = all). Layers
+    # above it are dropped, so a smaller value is also cheaper.
+    readout_layer: int | None = None
+    gradient_checkpointing: bool = True
+
+
+SLM = SLMPolicyConfig()
+
+
+@dataclass(frozen=True)
+class BCConfig:
+    """Behaviour cloning on whole demonstration episodes (training stages 1-3)."""
+
+    epochs: int = 20
+    batch_episodes: int = 32  # episodes per batch (full back-propagation through time)
+    lr: float = 3e-4
+    weight_decay: float = 0.0
+    grad_clip: float = 1.0
+    # Penalty on the mean write gate: makes memory writes rare.
+    write_penalty: float = 1e-2
+    # Validation: success rate on this many val episodes after each epoch (0 = loss only).
+    val_episodes: int = 100
+
+
+BC = BCConfig()
+
+
+@dataclass(frozen=True)
+class PPOConfig:
+    """Recurrent PPO in the environment (training stage 4)."""
+
+    total_steps: int = 200_000  # environment steps over all parallel envs
+    num_envs: int = 16
+    rollout_len: int = 128  # steps per env per update; one recurrent sequence per env
+    epochs: int = 4
+    minibatch_envs: int = 4  # sequences per minibatch
+    lr: float = 1e-4
+    grad_clip: float = 0.5
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_eps: float = 0.2
+    value_coef: float = 0.5
+    entropy_coef: float = 0.01
+    write_penalty: float = 1e-2
+    # Potential-based shaping weight (0 = environment reward only).
+    shaping: float = 0.1
+    val_every: int = 10  # updates between validation runs
+    val_episodes: int = 100
+
+
+PPO = PPOConfig()
+
+
 def as_dict() -> dict:
     """All settings as plain JSON-serialisable data (for logging next to results)."""
 
@@ -197,5 +284,8 @@ def as_dict() -> dict:
             "eval": asdict(EVAL),
             "train": asdict(TRAIN),
             "symbolic": asdict(SYMBOLIC),
+            "slm": asdict(SLM),
+            "bc": asdict(BC),
+            "ppo": asdict(PPO),
         }
     )

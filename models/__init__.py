@@ -10,14 +10,14 @@ public names in ``__all__``; everything else is internal. Requires the
     ``SymbolicAgent``, ``SymbolicPolicy`` (a ``babytext`` policy),
     ``SymbolicHistory``, ``stack_demo_steps``, ``MissionTokenizer``, ``NO_ACTION``.
 
-``models.slm_policy``  (planned, see models/README.md)
-    The main model: spatial encoder, time encoding, gated memory, space-time
-    attention, adapter into a small language model (SLM), action and value
-    heads. Planned public names: ``SLMPolicyConfig``, ``SLMPolicy``
-    (``forward(step_inputs, memory) -> (action_logits, value, new_memory)``),
-    ``initial_memory``, ``parameter_groups`` (named groups that training
-    freezes / unfreezes per stage), ``SLMAgentPolicy`` (a ``babytext`` policy
-    whose ``reset`` clears the memory), ``save_model`` / ``load_model``.
+``models.slm_policy``  (done, see models/README.md)
+    The main model: view encoder, time encoding, write-sparse slot memory,
+    space-time attention, a swappable backbone (MLP or SLM with soft tokens
+    and LoRA), action and value heads. ``SLMPolicy``
+    (``forward(obs, memory) -> PolicyOutput``), ``SLMAgentPolicy`` (a
+    ``babytext`` policy), ``Observations``, ``MemoryState``,
+    ``parameter_groups``, ``save_model`` / ``load_model``; full list in its
+    ``__all__``. Settings: ``config.SLM``.
 
 ``models.prompted``  (planned)
     Zero-shot baselines on the same SLM reading ``obs["prompt"]``:
