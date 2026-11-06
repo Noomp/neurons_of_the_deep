@@ -94,7 +94,8 @@ class HeadPolicy:
     """A trained head as a babytext policy (``obs -> action``), greedy.
 
     The GLAM prompt in ``obs["prompt"]`` already carries the last observations
-    and actions, so the policy keeps no state of its own.
+    and actions, so the policy keeps no state of its own. After each call,
+    ``last_logits`` holds the (6,) logits of that decision.
 
     Args:
         head: the trained head.
@@ -107,6 +108,7 @@ class HeadPolicy:
         self.head = head.to(device).eval()
         self.lm = lm
         self.device = torch.device(device)
+        self.last_logits: torch.Tensor | None = None
 
     def reset(self, env=None) -> None:
         pass
@@ -116,6 +118,7 @@ class HeadPolicy:
         layer = self.head.cfg.layer
         features, mask = pool(self.lm.run([obs["prompt"]], [layer]), layer, self.head.cfg.pooling)
         logits = self.head(features.to(self.device), None if mask is None else mask.to(self.device))
+        self.last_logits = logits[0]
         return int(logits[0].argmax())
 
 

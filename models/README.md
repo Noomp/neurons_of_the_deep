@@ -5,9 +5,9 @@ model can be loaded and evaluated without the training code.
 
 | module | status | what |
 |---|---|---|
-| [`action_head.py`](action_head.py) | done (untrained) | **P**, the proposed method: a small head on one layer's hidden states of the frozen LLM |
+| [`action_head.py`](action_head.py) | done | **P**, the proposed method: a small head on one layer's hidden states of the frozen LLM |
 | [`prompted.py`](prompted.py) | done | **B1 / B2**, the language-grounded baselines: the same frozen LLM generating (B1) or scoring (B2) the action names, zero-shot |
-| [`symbolic_agent.py`](symbolic_agent.py) | done (untrained) | **B3**, the non-language baseline: frame-stacked CNN + FiLM on the symbolic grid |
+| [`symbolic_agent.py`](symbolic_agent.py) | done | **B3**, the non-language baseline: frame-stacked CNN + FiLM on the symbolic grid |
 | [`frozen_lm.py`](frozen_lm.py) | done | the frozen LLM shared by P, B1 and B2: loading, truncation, hidden states of prompts |
 
 The design that was here before 4 Nov (an SLM reading a learned spatio-temporal memory, `slm_policy/`) is kept on git
@@ -85,7 +85,8 @@ Architecture figure: [report/figures/action_head_architecture.svg](../report/fig
 (drawn by `python report/figures/action_head_architecture.py`, which reads the parameter counts from the code).
 
 `HeadPolicy(head, lm)` is the babytext policy: one truncated LLM pass on `obs["prompt"]` per decision, greedy. It keeps
-no state, because the GLAM prompt already carries the last three observations and two actions.
+no state, because the GLAM prompt already carries the last three observations and two actions. `last_logits` holds the
+latest decision's six logits (recorded by the evaluation).
 
 **Checkpoints.** `save_model(head, path, llm, **extra)` stores the head's config, input size and weights, the LLM config
 it reads (not the LLM's weights) and `extra` (epoch, val scores). `load_model(path)` returns `(head, llm_config)`;
@@ -102,7 +103,8 @@ Both read the same GLAM prompt as P and choose through the meaning of the six ac
 - **B1, `GenerationPolicy`** (Huang et al., 2022): greedy generation of `config.PROMPTED.max_new_tokens` tokens. If the
   first line is exactly an action name, that action; otherwise the action whose name is nearest by cosine similarity of
   `sentence-transformers/all-MiniLM-L6-v2` embeddings (`SentenceEmbedder`). `stats` counts decisions and invalid
-  outputs (not exactly an action name) for the invalid-output rate.
+  outputs (not exactly an action name) for the invalid-output rate; `last_text` and `last_valid` describe the latest
+  decision.
 
 The prompt ends in `"Action N: "` (with a space); action names are tokenized on their own and appended to the prompt's
 tokens, identically for every action. The thinking mode is not used: the prompt is raw text, not a chat template.
@@ -117,7 +119,7 @@ with a fixed vocabulary (so invented names in `test_nonce` become unknown tokens
 Per-cell embeddings → 3x3 convolutions, each modulated by the mission through FiLM (as in the BabyAI baselines) →
 MLP with the mission and previous-action embeddings → 6 action logits. Sizes are in `config.SYMBOLIC`.
 `stack_demo_steps` builds training inputs from a demo file and `SymbolicHistory` builds the same inputs during a
-rollout. Architecture figure: [report/figures/symbolic_agent_architecture.svg](../report/figures/symbolic_agent_architecture.svg).
+rollout; `SymbolicPolicy.last_logits` holds the latest decision's six logits. Architecture figure: [report/figures/symbolic_agent_architecture.svg](../report/figures/symbolic_agent_architecture.svg).
 Trained by `python -m training.train --model b3` ([training README](../training/README.md)).
 
 **Checkpoints.** `save_model(model, path, **extra)` stores the config, the input window (`num_frames`, `view_size`),

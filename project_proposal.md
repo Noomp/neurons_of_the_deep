@@ -96,7 +96,7 @@ We use **BabyAI-Text** (Carta et al., 2023), a text-only version of BabyAI (Chev
 | B3 | Symbolic behaviour cloning: frame-stacked CNN with FiLM conditioning on the goal, on the last three symbolic views and two actions, trained on the same demonstrations | < 1M | None |
 | **P** | **Frozen LLM + action head (proposed).** Variants: layer ∈ {4, 8, 12, 16, 20, 24, 28}; pooling ∈ {last token, mean, learned attention}; MLP with 1–2 hidden layers | ~0.26–0.4M | 1 prefill, truncated at the layer read |
 
-The P variants are run in two steps (§6.4): last-token and mean pooling at every layer, then learned attention pooling at the best layers of that sweep (on the easy tier, layers 12, 16 and 20, which tied).
+The P variants are run in two steps (§6.4): last-token and mean pooling at every layer, then learned attention pooling at the best layers of that sweep (on the easy tier, layers 12, 16 and 20, which tied), plus the final layer 28 as a control for H2. The hard tier is not swept: it trains B3 and the configuration chosen on the easy tier (layer 12, attention pooling, 1 hidden layer), unchanged.
 
 B3 isolates the value of LLM representations: it sees the same information and demonstrations without language pretraining.
 
@@ -126,6 +126,7 @@ B3 isolates the value of LLM representations: it sees the same information and d
 - At least 3 training seeds per head configuration and for B3, reported as mean with 95% confidence intervals.
 - Layer, pooling, and hyperparameters are selected on the validation split only; the test and shifted sets are evaluated once.
 - All LLM-based conditions share the same backbone, prompt, and episodes; all trained conditions share the same demonstrations and training protocol.
+- For H2's clutter prediction, the last-token and mean-pooling heads at the best P's layer (P-L12-last-h1, P-L12-mean-h1) are also evaluated on `test` and `test_dist16`, next to the best P.
 - All conditions are reported, including negative results.
 
 ### 6.6 Failure Analysis
@@ -157,6 +158,7 @@ Negative results are also informative. For example, finding that heads collapse 
 | Zero-shot baselines perform near random | Medium | Still a valid reference point; report against the random floor and B3. |
 | Behaviour cloning suffers from compounding errors | Medium | DAgger-style relabelling for every trained condition; analyse drift explicitly in the failure analysis. |
 | Validation rollouts dominate the cost: each decision runs the LLM (about 21 ms on an RTX 5080), and a failing episode runs to its 64- or 128-step limit | Medium | Validation success is measured once per run, on the selected epoch; attention pooling only at the best layers; easy tier first. |
+| The final evaluation is long: 500 episodes per task and test set, and the zero-shot baselines fail most episodes, which then run to the step limit (B1 about 170 ms per decision: about 1.5 days of GPU time over both tiers; B2 about 9 hours) | High | The evaluation is resumable cell by cell and checks every run before the first episode; easy tier first, hard tier after; nothing else runs on the GPU meanwhile, so latencies stay comparable. |
 | Mean pooling is dominated by a few tokens with very large activations | Low | LayerNorm on the head's input; reported as a finding if mean pooling still fails. |
 | Time pressure near the deadline | High | Fixed milestones below; the layer sweep is cheap once hidden states are cached; hard tier only where time allows. |
 
@@ -165,7 +167,7 @@ Negative results are also informative. For example, finding that heads collapse 
 | Period | Milestones |
 |---|---|
 | Done by 4 Nov | Environment with four tasks and six eval sets, verified against GLAM; expert demonstrations collected; B1, B2, B3 and the action head implemented and tested; hidden-state caching and a shared behaviour-cloning trainer; run plan for every condition. |
-| 4–7 Nov | Hidden states cached; B1 and B2 evaluated; B3 and the last-token / mean layer sweep on the easy tier, 3 seeds; attention pooling at the best layers (12, 16, 20). **Milestone: core results by 7 Nov.** |
+| 4–7 Nov | Hidden states cached; B1 and B2 evaluated; B3 and the last-token / mean layer sweep on the easy tier, 3 seeds; attention pooling at the best layers (12, 16, 20) and at layer 28 as a control. **Milestone: core results by 7 Nov.** |
 | 7–10 Nov | Hard tier; demonstration-count curves; DAgger only if behaviour cloning drifts. |
 | 10–13 Nov | Shifted test sets and latency benchmarks for every condition; failure analysis. |
 | Final days: 13–16 Nov | Report writing and figures; code clean-up and reproduction README; AI Use Statement; submission before 16 Nov, 11:59 PM. |
@@ -206,9 +208,10 @@ The submitted version is in git history (commit `aa012f3`). The main question, r
 | 7 | **B3** is specified: a frame-stacked CNN with FiLM on the last three symbolic views and the two actions between them, without the heading (§6.3). | It sees the same window as the GLAM prompt, so B3 and the head differ in the model, not in the information. |
 | 8 | RQ1 names **B3** explicitly, and H1 adds a hypothesis about it (§3). | B3 is the comparison for "effective and efficient": a policy that needs no LLM at all. |
 | 9 | **Selection rule**: each run keeps the epoch with the lowest validation cross-entropy and measures validation success once on it; configurations are compared by that success (§6.4). | Every validation decision runs the LLM, so measuring success after every epoch of every configuration would take days of GPU time. The rule is the same for B3 and the head. |
-| 10 | **Attention pooling** is run only at the best layers of the last-token / mean sweep (§6.3): planned as the two best; on the easy tier layers 12, 16 and 20 tied (best configurations 0.692–0.695 val success, within noise), so all three are used. | It needs every token's vector, which cannot be cached for all layers (about 45 GB per layer for all demonstrations); last-token and mean pooling are cached for every layer. Choosing two of three tied layers would have been arbitrary. |
+| 10 | **Attention pooling** is run only at the best layers of the last-token / mean sweep (§6.3): planned as the two best; on the easy tier layers 12, 16 and 20 tied (best configurations 0.692–0.695 val success, within noise), so all three are used. Layer 28 is added as a control, so H2 (intermediate vs final layer) is also tested with attention pooling. | It needs every token's vector, which cannot be cached for all layers (about 45 GB per layer for all demonstrations); last-token and mean pooling are cached for every layer. Choosing two of three tied layers would have been arbitrary. |
 | 11 | **Learning-rate decay and early stopping** for every trained condition, with one shared initial learning rate chosen on validation (§6.4). | A fixed schedule (20 epochs) under-trained both the head and B3; with early stopping every model trains until validation cross-entropy stops improving. One shared value keeps the protocol identical. |
-| 12 | Risks, compute, timeline and team roles updated (§9–12). | Measured costs and the remaining schedule. |
+| 12 | **The hard tier is not swept** (§6.3): it trains only B3 and the head configuration chosen on the easy tier, unchanged. | The sweep answers RQ2 on the easy tier; on the hard tier the question is whether the easy-tier comparison with B3 holds on longer tasks. Fixing the configuration on the easy tier also avoids re-tuning per tier. Each hard-tier head run costs about twice an easy one. |
+| 13 | Risks, compute, timeline and team roles updated (§9–12). | Measured costs and the remaining schedule. |
 
 ## References
 

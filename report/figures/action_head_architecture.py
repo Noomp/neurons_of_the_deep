@@ -167,7 +167,7 @@ def main():
         "Its LayerNorm is applied to each token first;\n"
         "for last / mean, to the pooled vector.\n\n"
         "Swept (val success): layer l × pooling × h1/h2;\n"
-        "attention only at the best layers (12, 16, 20)."
+        "attention at the best layers (12, 16, 20) + 28."
     )
     for i, (label, (edge, fill)) in enumerate((("input", INPUT), ("frozen (never trained)", FROZEN),
                                                 ("pooling", POOL), ("trained", TRAINED))):

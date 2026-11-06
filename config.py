@@ -133,6 +133,10 @@ DATA = DataConfig()
 class EvalConfig:
     # Episodes per (task, eval set) for final evaluation and reference baselines.
     n_episodes: int = 500
+    # The eval sets of the final evaluation (evaluated once, never used for selection).
+    test_sets: tuple[str, ...] = ("test", "test_dist16", "test_nonce", "test_heldout")
+    # Untimed decisions each policy makes before its first timed episode (GPU warm-up).
+    warmup_decisions: int = 5
     # Expert episodes per (task, eval set) for the dataset statistics charts.
     n_stats_episodes: int = 200
 

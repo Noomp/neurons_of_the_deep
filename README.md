@@ -13,14 +13,15 @@ demonstrations ([project_proposal.md](project_proposal.md), §3).
 
 ## Layout
 
-The code is split into three sections. Each has its own README (install, run, public API, flow, design choices,
+The code is split into four sections. Each has its own README (install, run, public API, flow, design choices,
 limitations).
 
 | section | status | contents | README |
 |---|---|---|---|
 | `babytext/` | done | the environment: BabyAI-Text-style gridworld, eval sets and seeds, expert / random policies, rollout and evaluation, demonstration file format, visualisation, environment tools and tests | [babytext](babytext/README.md) |
-| `models/` | done (untrained) | the policies: the action head on the frozen LLM (P), the zero-shot baselines B1 / B2, the symbolic agent B3, and the shared frozen-LLM wrapper | [models](models/README.md) |
-| `training/` | done (untrained) | demonstration collection and statistics, hidden-state caching, one behaviour-cloning trainer for P and B3, `--set` overrides and the run plan | [training](training/README.md) |
+| `models/` | done | the policies: the action head on the frozen LLM (P), the zero-shot baselines B1 / B2, the symbolic agent B3, and the shared frozen-LLM wrapper | [models](models/README.md) |
+| `training/` | done | demonstration collection and statistics, hidden-state caching, one behaviour-cloning trainer for P and B3, `--set` overrides and the run plan | [training](training/README.md) |
+| `evaluation/` | done (not yet run) | the final evaluation: every condition on the test sets with every decision recorded (resumable), and the report's tables | [evaluation](evaluation/README.md) |
 
 ```
 grp_proj/
@@ -29,11 +30,12 @@ grp_proj/
 ├── uv.lock              locked dependency versions (source of requirements.txt)
 ├── requirements.txt     pinned dependencies for a venv, exported from uv.lock
 ├── environment.yml      conda env ("neurons") for the whole project, including GPU PyTorch
-├── pyproject.toml       installs babytext, models, training and config (pip install -e .)
+├── pyproject.toml       installs babytext, models, training, evaluation and config (pip install -e .)
 ├── babytext/            the environment: package, tools/, tests/, README.md
 ├── models/              the policies: action_head.py (P), prompted.py (B1, B2), symbolic_agent.py (B3), frozen_lm.py
 ├── training/            datasets, hidden-state cache and training: tools/, README.md
-├── tests/               model and training tests
+├── evaluation/          final evaluation on the test sets and its tables: README.md
+├── tests/               model, training and evaluation tests
 ├── report/              figures for the report (P and B3 architecture diagrams, with the scripts that draw them)
 └── data/, outputs/      generated demos, hidden-state caches, figures and results (gitignored)
 ```
@@ -99,7 +101,7 @@ All settings live in [config.py](config.py) (importable as `config`); edit the d
 | `ENV` | room size, distractors, view size, time limit, held-out goals, invented words, prompt window |
 | `EVAL_SETS` | the six eval sets: seed split and how each one's levels differ from `ENV` |
 | `DATA` | demo counts per task, data, hidden-state cache and output folders |
-| `EVAL` | episodes per evaluation |
+| `EVAL` | episodes per evaluation, the test sets of the final evaluation, warm-up decisions before timing |
 | `TRAIN` | training protocol: seeds, demo-count curve, DAgger |
 | `LLM` | the frozen LLM shared by B1, B2 and P (Qwen3-0.6B, bfloat16) |
 | `HEAD` | the action head P: layer read, pooling, MLP size, and the layers swept |
@@ -140,6 +142,7 @@ result["success_rate"], result["mean_reward"], result["episodes"]
 python -m training.tools.collect_demos              # expert demonstrations -> data/demos/
 python -m training.tools.cache_hidden               # frozen-LLM hidden states of every demo step -> data/hidden/
 python -m training.run_plan --dry-run               # every training command
+python -m evaluation.evaluate --models random B3 P-L12-attn-h1 B2 B1 --dry-run   # final evaluation plan
 python -m babytext.tools.play --task goto --eval-set test_nonce   # play by hand
 ```
 
@@ -171,7 +174,7 @@ one shared loop for P and B3 (same demonstrations, seeds, batches, optimiser set
 learning rate (initially 3e-3) halves when val cross-entropy stalls for 3 epochs, and training stops once it has not
 improved for 10 epochs. Each run keeps the epoch with the lowest val cross-entropy and measures val greedy success once on it;
 layers, poolings and other configurations are compared by that success. The layer sweep has two steps: last-token and mean pooling at
-layers 4, 8, ..., 28 with 1 or 2 MLP hidden layers, then learned attention pooling at the best layers (12, 16 and 20 on the easy tier, which tied).
+layers 4, 8, ..., 28 with 1 or 2 MLP hidden layers, then learned attention pooling at the best layers (12, 16 and 20 on the easy tier, which tied) and at the final layer 28 as a control.
 No reinforcement learning, no LLM fine-tuning, and no thinking mode (proposal §4, §14).
 
 ## Evaluation
@@ -190,7 +193,8 @@ reference results are in the [babytext README](babytext/README.md#tasks).
 | `test_nonce` | test | 8 | all except held-out | **invented** (`red`→`dueno`, `ball`→`tism`, ...) | language grounding: names the LLM has never seen (B3's `image` codes are unchanged) |
 | `test_heldout` | test | 8 | **one named object held out** (yellow box, red key, green ball) | real | generalisation to unseen goals |
 
-Use `val` for all model selection and evaluate `test*` once at the end (proposal §6.5). Report every result next to
+Use `val` for all model selection and evaluate `test*` once at the end (proposal §6.5), with
+`python -m evaluation.evaluate` ([evaluation README](evaluation/README.md)). Report every result next to
 the random floor (high on `goto`: ~0.3), as mean and 95% CI over the training seeds in `config.TRAIN.seeds`.
 
 Comparisons, all on the same seeds (proposal §6.3; research questions in §3):
@@ -202,7 +206,7 @@ Comparisons, all on the same seeds (proposal §6.3; research questions in §3):
 | B1 | Qwen3 reads the GLAM prompt and generates text, mapped to the nearest valid action | - | RQ1, RQ3: can the untrained LLM act through language? |
 | B2 | Qwen3 log-probability scoring of the six action strings | - | RQ1, RQ3: same, without invalid outputs |
 | B3 | frame-stacked CNN + FiLM on the last 3 symbolic views and 2 actions, goal read word by word, no LLM | BC | RQ1: does the LLM pay for its cost? |
-| P-L*l*-*pool*-h*n* | action head on Qwen3 layer *l* (4, 8, ..., 28), pooling last / mean (all layers) or attention (best layers: 12, 16, 20), *n* = 1-2 MLP hidden layers | BC | RQ1 (best variant), RQ2 (layer and pooling), RQ3 |
+| P-L*l*-*pool*-h*n* | action head on Qwen3 layer *l* (4, 8, ..., 28), pooling last / mean (all layers) or attention (best layers 12, 16, 20, and 28 as a control), *n* = 1-2 MLP hidden layers | BC | RQ1 (best variant), RQ2 (layer and pooling), RQ3 |
 
 ## Acknowledgements
 

@@ -24,7 +24,7 @@ models = ["torch>=2.4", "transformers>=4.51"]
 
 [tool.setuptools]
 # babytext: the environment (with its tools); models: the policies; training: datasets and training.
-packages = ["babytext", "babytext.tools", "models", "training", "training.tools"]
+packages = ["babytext", "babytext.tools", "models", "training", "training.tools", "evaluation"]
 # Root-level config.py (all project settings) is importable as `config`.
 py-modules = ["config"]
 

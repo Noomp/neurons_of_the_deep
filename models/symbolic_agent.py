@@ -311,13 +311,15 @@ class SymbolicHistory:
 
 class SymbolicPolicy:
     """Greedy policy around a trained ``SymbolicAgent``, usable with
-    ``babytext.evaluate`` / ``run_episode`` (callable ``obs -> action``)."""
+    ``babytext.evaluate`` / ``run_episode`` (callable ``obs -> action``).
+    After each call, ``last_logits`` holds the (6,) logits of that decision."""
 
     def __init__(self, model: SymbolicAgent, device: str | torch.device = "cpu"):
         self.model = model.to(device).eval()
         self.device = torch.device(device)
         self.history = SymbolicHistory(model.num_frames)
         self._mission = None
+        self.last_logits: torch.Tensor | None = None
 
     def reset(self, env=None):
         self.history.reset()
@@ -331,6 +333,7 @@ class SymbolicPolicy:
         self.history.add_observation(obs["image"])
         inputs = {k: torch.from_numpy(v).to(self.device) for k, v in self.history.inputs().items()}
         logits = self.model(**inputs, mission_tokens=self._mission[0], mission_lengths=self._mission[1])
+        self.last_logits = logits[0]
         action = int(logits.argmax(dim=-1))
         self.history.add_action(action)  # the policy's own action is the one executed
         return action

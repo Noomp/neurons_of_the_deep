@@ -169,7 +169,7 @@ need:
 |---|---|---|
 | `B3` | the symbolic agent | 1 |
 | `P-L<l>-<last\|mean>-h<n>` | head at layer *l* of `config.HEAD.sweep_layers` (4, 8, ..., 28), last-token or mean pooling, *n* = 1 or 2 MLP hidden layers: 28 IDs | 1 |
-| `P-L<l>-attn-h<n>` | learned attention pooling at the layers passed with `--attention-layers` (the layers tied for best in step 1 by val success: 12, 16, 20 on the easy tier) | 2 |
+| `P-L<l>-attn-h<n>` | learned attention pooling at the layers passed with `--attention-layers` (the layers tied for best in step 1 by val success: 12, 16, 20 on the easy tier; plus 28 as a control for H2) | 2 |
 | `<ID>-n<k>` | `--curve ID`: the ID trained on the first *k* demos per task, for every *k* in `config.TRAIN.demo_counts` below the full count (the full count is the ID's own run) | 3 |
 
 `--ids` takes names or glob patterns. Without `--dry-run` the commands run in order, missing caches are built first,

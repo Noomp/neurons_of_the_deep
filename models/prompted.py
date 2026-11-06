@@ -121,7 +121,8 @@ class GenerationPolicy:
         device: where ``lm`` is.
 
     ``stats`` counts ``decisions`` and ``invalid`` (outputs that are not
-    exactly an action name); ``last_text`` is the latest generated text.
+    exactly an action name); ``last_text`` is the latest generated text and
+    ``last_valid`` whether it was exactly an action name.
     """
 
     def __init__(self, lm, tokenizer, embed: Callable[[list[str]], torch.Tensor], max_new_tokens: int = 8,
@@ -132,6 +133,7 @@ class GenerationPolicy:
         self.action_embeddings = embed(list(ACTION_NAMES))
         self.stats = {"decisions": 0, "invalid": 0}
         self.last_text = ""
+        self.last_valid = True
 
     @classmethod
     def load(cls, llm: LLMConfig = LLM, cfg: PromptedConfig = PROMPTED, device: str | torch.device = "cpu") -> GenerationPolicy:
@@ -157,6 +159,7 @@ class GenerationPolicy:
                                do_sample=False, temperature=None, top_p=None, top_k=None, pad_token_id=pad)
         self.last_text = self.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
         action, valid = self.map_text(self.last_text)
+        self.last_valid = valid
         self.stats["decisions"] += 1
         self.stats["invalid"] += int(not valid)
         return action
