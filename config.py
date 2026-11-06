@@ -239,11 +239,11 @@ class BCConfig:
     learning rate decays when it stalls, so ``epochs`` is only an upper bound.
     """
 
-    epochs: int = 200  # upper bound; early stopping ends runs after ~15-40 epochs
+    epochs: int = 200  # upper bound; early stopping ends runs long before this
     batch_episodes: int = 32  # episodes per batch; the batch holds all their steps
-    # Initial learning rate. 1e-2 gave the lowest (or tied lowest) val cross-entropy for
-    # both B3 and the head (goto, 4 Nov; 3e-4 under-trained both); see training/README.md.
-    lr: float = 1e-2
+    # Initial learning rate, shared by B3 and the head: chosen from {1e-3, 3e-3, 1e-2} by
+    # val cross-entropy on the easy tier, where it is the best for both (training/README.md).
+    lr: float = 3e-3
     weight_decay: float = 0.0
     grad_clip: float = 1.0
     # Learning-rate decay: "plateau" multiplies the lr by lr_factor after lr_patience
@@ -251,10 +251,10 @@ class BCConfig:
     # ``epochs``; "none" keeps it constant.
     lr_decay: str = "plateau"
     lr_factor: float = 0.5
-    lr_patience: int = 2
+    lr_patience: int = 3
     min_lr: float = 1e-6
     # Early stopping: stop after this many epochs without a lower val cross-entropy (0 = never).
-    patience: int = 6
+    patience: int = 10
     # Greedy success on this many val episodes per task, measured once on the selected epoch (0 = skip).
     val_episodes: int = 100
 

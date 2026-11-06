@@ -154,6 +154,23 @@ def test_b3_trains_with_the_same_protocol(demos, tmp_path):
     assert all((out / f).exists() for f in ("best.pt", "last.pt"))
 
 
+def test_finished_runs_are_kept_and_reruns_start_a_fresh_log(demos, tmp_path):
+    out = tmp_path / "b3"
+    args = run_args(demos, out, "--model", "b3", *sets("bc.epochs=2", "bc.val_episodes=0"))
+    main(args)
+    first = read_run(out)
+    with pytest.raises(SystemExit, match="finished run; pass --overwrite"):
+        main(args)
+    assert read_run(out) == first  # untouched
+    main([*args, "--overwrite"])
+    assert len(metrics(out)) == 3  # 2 epochs + selection, not appended to the first run's lines
+
+    crashed = read_run(out) | {"finished": False}  # an unfinished run is replaced without --overwrite
+    (out / "run.json").write_text(json.dumps(crashed))
+    main(args)
+    assert read_run(out)["finished"] and len(metrics(out)) == 3
+
+
 def test_b3_save_load_same_logits(demos, tmp_path):
     model = SymbolicAgent(replace(SYMBOLIC, conv_channels=8, hidden_dim=16))
     data = symbolic_demos(load_demo_episodes(demos / "goto_train", 4), model)
@@ -255,6 +272,9 @@ def test_run_plan(capsys):
     attn = plan_lines(capsys, "--attention-layers", "12", "--ids", "P-*-attn-*", "--tiers", "easy", "--seeds", "0")
     assert any("--sequence-layers 12" in line for line in attn)
     assert sum("training.train" in line for line in attn) == 2
+    assert plan_lines(capsys, "--attention-layers", "L12", "--ids", "P-*-attn-*", "--tiers", "easy", "--seeds", "0") == attn
+    with pytest.raises(SystemExit):
+        run_plan.main(["--dry-run", "--attention-layers", "13"])
 
     curve = plan_lines(capsys, "--curve", "B3", "--ids", "B3-n*", "--tiers", "easy", "--seeds", "0")
     counts = [k for k in config.TRAIN.demo_counts if k < config.DATA.n_train_demos]

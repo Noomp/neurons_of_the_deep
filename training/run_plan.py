@@ -10,8 +10,8 @@ demos, seeds, batches, epochs and selection rule):
   ``config.HEAD.sweep_layers``, last-token or mean pooling, ``n`` = 1 or 2 MLP
   hidden layers (step 1 of the sweep; trains from the cache in seconds).
 * ``P-L<l>-attn-h<n>``: learned attention pooling at the layers given with
-  ``--attention-layers`` (step 2: the 1-2 best layers of step 1 by val
-  success, see ``--summary``); these need cached token sequences.
+  ``--attention-layers`` (step 2: the layers tied for best in step 1 by
+  val success, see ``--summary``); these need cached token sequences.
 * ``--curve ID ...``: the demo-count curve of those IDs, ``<ID>-n<k>`` for every
   k in ``config.TRAIN.demo_counts`` below the full demo count (which is the
   ID's own run).
@@ -161,13 +161,21 @@ def summary(root: Path, plan: list[PlannedModel], tiers: list[str], seeds: list[
         print()
 
 
+def layer_number(text: str) -> int:
+    """A layer given as ``20`` or as in the run IDs, ``L20``."""
+    try:
+        return int(text.removeprefix("L"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a layer number: {text!r} (e.g. 20 or L20)") from None
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print the commands instead of running them")
     parser.add_argument("--summary", action="store_true", help="print val success of finished runs instead")
     parser.add_argument("--ids", nargs="+", help="model IDs or glob patterns to include (default: all)")
-    parser.add_argument("--attention-layers", nargs="*", type=int, default=[],
-                        help="layers for the attention-pooling heads (step 2)")
+    parser.add_argument("--attention-layers", nargs="*", type=layer_number, default=[], metavar="LAYER",
+                        help="layers for the attention-pooling heads (step 2), e.g. 20 16 or L20 L16")
     parser.add_argument("--curve", nargs="*", default=[], metavar="ID", help="add demo-count curves of these IDs")
     parser.add_argument("--tiers", nargs="+", choices=sorted(TIERS), default=list(TIERS))
     parser.add_argument("--seeds", nargs="+", type=int, help="training seeds (default: config.TRAIN.seeds)")
@@ -180,6 +188,9 @@ def main(argv: list[str] | None = None) -> None:
         cfgs = effective_configs(parse_overrides(args.set))
     except OverrideError as e:
         parser.error(str(e))
+    unswept = sorted(set(args.attention_layers) - set(cfgs["head"].sweep_layers))
+    if unswept:
+        parser.error(f"--attention-layers {unswept}: pick from the step-1 layers {list(cfgs['head'].sweep_layers)}")
     plan = models(cfgs["head"].sweep_layers, args.attention_layers)
     by_id = {m.id: m for m in plan}
     unknown = [c for c in args.curve if c not in by_id]

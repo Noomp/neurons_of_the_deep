@@ -51,7 +51,14 @@ LLM or layers do not match, and says what to re-run.
 
 `--model head` (the default) trains P from the cache; `--model b3` trains B3. Other options: `--tasks` (default
 `goto pickup`), `--n-demos N` (first N training demos per task), `--seed k` (default: the first of
-`config.TRAIN.seeds`), `--id` (model ID recorded in `run.json`), `--device`, `--demos`, `--hidden`, and `--set` (below).
+`config.TRAIN.seeds`), `--id` (model ID recorded in `run.json`), `--device`, `--demos`, `--hidden`, `--overwrite`
+(below) and `--set` (below).
+
+**One run per folder.** `train.py` refuses an `--out` folder that holds a finished run (`"finished": true` in its
+`run.json`) unless `--overwrite` is given, so a mistyped `--out` cannot wipe a result. A folder with an unfinished
+(crashed or interrupted) run is reused without the flag. Either way the new run replaces `run.json`, `metrics.jsonl`,
+`best.pt` and `last.pt`; nothing from the earlier attempt is kept. There is no resume within a run: a head trains in
+seconds and B3 in about 10 s, so an interrupted run simply starts again (`run_plan` does this automatically).
 
 ### The shared protocol (`bc.py`)
 
@@ -63,28 +70,32 @@ Both models go through the same `train_bc` loop, so the protocol is identical by
 - **Optimiser:** AdamW with `config.BC`'s learning rate, weight decay and gradient clipping; cross-entropy on the
   expert's actions.
 - **Learning-rate decay and early stopping:** after each epoch, val cross-entropy and accuracy on the val demos
-  (eval mode). With `lr_decay="plateau"` (default) the learning rate halves (`lr_factor`) after `lr_patience` = 2
+  (eval mode). With `lr_decay="plateau"` (default) the learning rate halves (`lr_factor`) after `lr_patience` = 3
   epochs without a lower val cross-entropy (down to `min_lr`); `"cosine"` anneals it over `epochs`, `"none"` keeps it.
-  Training stops after `patience` = 6 epochs without improvement, so every model trains until it stops improving;
-  `epochs` = 200 is only an upper bound. Each epoch's `lr` is logged.
+  Training stops after `patience` = 10 epochs without improvement, so every model trains until it stops improving;
+  `epochs` = 200 is only an upper bound. Each epoch's `lr` is logged. Any decrease in val cross-entropy counts as an
+  improvement. `patience` must exceed `lr_patience` by more than one epoch, or a run stops on the same epoch its
+  learning rate would first drop.
 - **Selection:** the epoch with the lowest val cross-entropy is kept as `best.pt` (`last.pt` is the latest), and
   greedy success on `config.BC.val_episodes` val episodes per task is measured **once**, on that epoch. Configurations
   are compared by that success (`run_plan --summary`). Measuring success after every epoch would run the LLM at every
   decision of every val episode of every epoch: days of GPU time over the sweep (proposal §14).
 
-**Why these defaults.** With the earlier fixed schedule (lr 3e-4, 20 epochs) both models under-trained: the head's val
-cross-entropy flattened early and its val success stayed at the random floor. Measured on `goto` (all 2000 demos, val
-cross-entropy of the selected epoch, plateau decay and early stopping unless noted):
+**How the learning rate was chosen.** One initial learning rate is shared by P and B3, so the protocol stays
+identical. It was chosen by val cross-entropy (the selection criterion) on the easy tier (`goto` + `pickup`, all 2000
+demos per task, 3 seeds), for B3 and for the best head configuration of the 1e-2 sweep. Mean over seeds of the kept
+epoch's val cross-entropy, with val success in brackets:
 
-| model | 3e-4, fixed, 20 epochs | 3e-4 | 1e-3 | 3e-3 | **1e-2** | 3e-2 |
-|---|---|---|---|---|---|---|
-| P, layer 16, last token | 0.722 | 0.713 | 0.679 | **0.638** | 0.639 | – |
-| P, layer 16, mean | 0.678 | 0.616 | 0.586 | 0.510 | **0.505** | – |
-| P, layer 28, last token | 0.746 | 0.728 | 0.723 | **0.626** | 0.638 | – |
-| B3 | 0.568 | 0.569 | 0.518 | 0.490 | **0.413** | 0.536 |
+| model | 1e-3 | **3e-3** | 1e-2 |
+|---|---|---|---|
+| P, layer 20, mean, 1 hidden layer | 0.585 (0.50; 1 seed) | **0.507** (0.71) | 0.561 (0.67) |
+| B3 | 0.376 (0.78) | **0.258** (0.87) | 0.517 (0.59) |
 
-An initial learning rate of 1e-2 is the best or within 0.012 of the best for every model, so one shared value keeps
-the protocol identical for P and B3; runs then stop after 16-35 epochs. This used val demos only (no test data).
+3e-3 is the best for both. At 1e-2, B3's val cross-entropy fluctuates strongly, and two of its three seeds stopped
+before learning `pickup` (val success 0.41 and 0.48, against 0.89 for the third seed). P converged at 1e-2 but to a
+worse minimum. These runs used `lr_patience` 2 and `patience` 6 (B3 at 1e-3: `patience` 20). The final values
+(3 and 10) give the decay and early stopping a few more epochs, so a noisy val cross-entropy ends fewer runs.
+Only val demos and val episodes were used (no test data).
 
 For P, training reads only the cache; the LLM runs once at the end, truncated to the head's layer, for the val
 episodes (about 65 s for 100 `goto` episodes on an RTX 5080). For B3, each step is an independent frame-stacked sample
@@ -146,7 +157,7 @@ collected count is refused too.
 python -m training.run_plan --dry-run                                  # every command
 python -m training.run_plan --ids B3 "P-L*" --tiers easy               # step 1 on the easy tier, in order
 python -m training.run_plan --summary --tiers easy                     # val success per ID, best first
-python -m training.run_plan --attention-layers 12 16 --ids "P-*-attn-*" --tiers easy   # step 2
+python -m training.run_plan --attention-layers 12 16 --ids "P-*-attn-*" --tiers easy   # step 2 (layer numbers; L12 L16 also works)
 python -m training.run_plan --curve B3 P-L16-mean-h1 --ids "*-n*"      # demo-count curves
 ```
 
@@ -158,7 +169,7 @@ need:
 |---|---|---|
 | `B3` | the symbolic agent | 1 |
 | `P-L<l>-<last\|mean>-h<n>` | head at layer *l* of `config.HEAD.sweep_layers` (4, 8, ..., 28), last-token or mean pooling, *n* = 1 or 2 MLP hidden layers: 28 IDs | 1 |
-| `P-L<l>-attn-h<n>` | learned attention pooling at the layers passed with `--attention-layers` (the 1-2 best of step 1 by val success) | 2 |
+| `P-L<l>-attn-h<n>` | learned attention pooling at the layers passed with `--attention-layers` (the layers tied for best in step 1 by val success: 12, 16, 20 on the easy tier) | 2 |
 | `<ID>-n<k>` | `--curve ID`: the ID trained on the first *k* demos per task, for every *k* in `config.TRAIN.demo_counts` below the full count (the full count is the ID's own run) | 3 |
 
 `--ids` takes names or glob patterns. Without `--dry-run` the commands run in order, missing caches are built first,
@@ -230,4 +241,4 @@ cache_hidden: frozen LLM, once ─► data/hidden/...   stack_demo_steps (B3's f
   it; it is not implemented (`config.TRAIN.dagger_rounds` is unused).
 - **Validation is sequential.** `training.common.validate` runs one environment at a time; batched evaluation would
   make the head's val episodes several times faster.
-- **Attention pooling needs large caches** (about 14-28 GB per layer per tier), which is why it runs at two layers only.
+- **Attention pooling needs large caches** (about 14-28 GB per layer per tier), which is why it runs only at the layers tied for best in step 1 (three on the easy tier).

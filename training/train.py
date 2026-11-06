@@ -55,7 +55,17 @@ def main(argv: list[str] | None = None) -> None:
                         help="change one setting for this run, e.g. head.layer=16 (repeatable)")
     parser.add_argument("--id", help="model ID recorded in run.json, e.g. P-L16-mean-h1")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--overwrite", action="store_true", help="replace a finished run in --out")
     args = parser.parse_args(argv)
+
+    previous = args.out / "run.json"
+    if previous.exists() and not args.overwrite:
+        try:
+            done = json.loads(previous.read_text(encoding="utf-8")).get("finished", False)
+        except ValueError:
+            done = False
+        if done:
+            raise SystemExit(f"error: {args.out} holds a finished run; pass --overwrite to replace it")
 
     try:
         overrides = parse_overrides(args.set, FIXED)
@@ -113,6 +123,7 @@ def main(argv: list[str] | None = None) -> None:
         "finished": False,
     }
     args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "metrics.jsonl").unlink(missing_ok=True)  # one run per folder: no lines from an earlier attempt
     run_json = args.out / "run.json"
     run_json.write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
     print(f"{description}; {model.num_parameters():,} trainable parameters")

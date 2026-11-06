@@ -34,7 +34,7 @@ grp_proj/
 ├── models/              the policies: action_head.py (P), prompted.py (B1, B2), symbolic_agent.py (B3), frozen_lm.py
 ├── training/            datasets, hidden-state cache and training: tools/, README.md
 ├── tests/               model and training tests
-├── report/              figures for the report (B3 architecture diagram)
+├── report/              figures for the report (P and B3 architecture diagrams, with the scripts that draw them)
 └── data/, outputs/      generated demos, hidden-state caches, figures and results (gitignored)
 ```
 
@@ -168,10 +168,10 @@ whether running the LLM pays for its cost.
 
 **Training** ([training README](training/README.md)): behaviour cloning on 2000 expert demonstrations per task, with
 one shared loop for P and B3 (same demonstrations, seeds, batches, optimiser settings and selection rule). The
-learning rate (initially 1e-2) halves when val cross-entropy stalls, and training stops once it has not improved for
-6 epochs. Each run keeps the epoch with the lowest val cross-entropy and measures val greedy success once on it;
+learning rate (initially 3e-3) halves when val cross-entropy stalls for 3 epochs, and training stops once it has not
+improved for 10 epochs. Each run keeps the epoch with the lowest val cross-entropy and measures val greedy success once on it;
 layers, poolings and other configurations are compared by that success. The layer sweep has two steps: last-token and mean pooling at
-layers 4, 8, ..., 28 with 1 or 2 MLP hidden layers, then learned attention pooling at the two best layers.
+layers 4, 8, ..., 28 with 1 or 2 MLP hidden layers, then learned attention pooling at the best layers (12, 16 and 20 on the easy tier, which tied).
 No reinforcement learning, no LLM fine-tuning, and no thinking mode (proposal §4, §14).
 
 ## Evaluation
@@ -202,7 +202,7 @@ Comparisons, all on the same seeds (proposal §6.3; research questions in §3):
 | B1 | Qwen3 reads the GLAM prompt and generates text, mapped to the nearest valid action | - | RQ1, RQ3: can the untrained LLM act through language? |
 | B2 | Qwen3 log-probability scoring of the six action strings | - | RQ1, RQ3: same, without invalid outputs |
 | B3 | frame-stacked CNN + FiLM on the last 3 symbolic views and 2 actions, goal read word by word, no LLM | BC | RQ1: does the LLM pay for its cost? |
-| P-L*l*-*pool*-h*n* | action head on Qwen3 layer *l* (4, 8, ..., 28), pooling last / mean (all layers) or attention (2 best layers), *n* = 1-2 MLP hidden layers | BC | RQ1 (best variant), RQ2 (layer and pooling), RQ3 |
+| P-L*l*-*pool*-h*n* | action head on Qwen3 layer *l* (4, 8, ..., 28), pooling last / mean (all layers) or attention (best layers: 12, 16, 20), *n* = 1-2 MLP hidden layers | BC | RQ1 (best variant), RQ2 (layer and pooling), RQ3 |
 
 ## Acknowledgements
 

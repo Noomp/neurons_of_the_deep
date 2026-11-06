@@ -81,6 +81,8 @@ obs["prompt"] ─► frozen LLM, layers 1..l ─► token vectors (L x 1024) at 
 Settings are `config.HEAD` (`layer`, `pooling`, `hidden_layers`, `hidden_dim`, `attention_dim`; `sweep_layers` are the
 layers the cache and the run plan cover). With 1024-wide hidden states, a head has about 0.26M (1 hidden layer) to
 0.4M (2 hidden layers, attention) trainable parameters.
+Architecture figure: [report/figures/action_head_architecture.svg](../report/figures/action_head_architecture.svg)
+(drawn by `python report/figures/action_head_architecture.py`, which reads the parameter counts from the code).
 
 `HeadPolicy(head, lm)` is the babytext policy: one truncated LLM pass on `obs["prompt"]` per decision, greedy. It keeps
 no state, because the GLAM prompt already carries the last three observations and two actions.
