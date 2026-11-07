@@ -239,6 +239,13 @@ cache_hidden: frozen LLM, once ─► data/hidden/...   stack_demo_steps (B3's f
 - **Demonstrations are short and optimal.** The expert needs about 6 steps (easy tier) or 12 (hard tier), and the
   policy never sees how to recover from a mistake. DAgger (`babytext.ExpertPolicy` with `action_taken`) would address
   it; it is not implemented (`config.TRAIN.dagger_rounds` is unused).
+- **Selecting the epoch by val cross-entropy keeps an early B3 on the hard tier.** B3 overfits there (training
+  accuracy reaches 100% within about 15 epochs while val accuracy stays at about 0.78), and its val cross-entropy
+  is lowest at epoch 2-5 and rises after, while the actions it picks still improve. The kept checkpoints reach 0.228
+  val success; the last checkpoints (10 epochs later) 0.393. P is unaffected (0.633 kept, 0.628 last), as is the easy tier (B3 0.890 vs
+  0.922, P 0.873 vs 0.893). The rule is kept as agreed, for every model; P stays far ahead of B3 on the hard tier
+  under either choice. Measured on 100 val episodes per task, 3 seeds. Every run's val results:
+  [`report/val_results.md`](../report/val_results.md).
 - **Validation is sequential.** `training.common.validate` runs one environment at a time; batched evaluation would
   make the head's val episodes several times faster.
 - **Attention pooling needs large caches** (about 14-28 GB per layer per tier), which is why it runs only at the layers tied for best in step 1 (three on the easy tier).

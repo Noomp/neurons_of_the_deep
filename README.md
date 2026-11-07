@@ -36,7 +36,7 @@ grp_proj/
 ├── training/            datasets, hidden-state cache and training: tools/, README.md
 ├── evaluation/          final evaluation on the test sets and its tables: README.md
 ├── tests/               model, training and evaluation tests
-├── report/              figures for the report (P and B3 architecture diagrams, with the scripts that draw them)
+├── report/              val_results.md (every training run's val results) and figures (P and B3 architecture diagrams)
 └── data/, outputs/      generated demos, hidden-state caches, figures and results (gitignored)
 ```
 
