@@ -15,7 +15,7 @@ state); nothing imports it.
 ```bash
 python -m evaluation.evaluate --models random B3 P-L12-attn-h1 B2 B1 --tiers easy --dry-run   # check the plan
 python -m evaluation.evaluate --models random B3 P-L12-attn-h1 B2 B1 --tiers easy             # then run it
-python -m evaluation.evaluate --models random B3 P-L12-attn-h1 B2 B1 --tiers hard
+python -m evaluation.evaluate --models random B3 P-L12-attn-h1 P-L28-attn-h1 B2 B1 --tiers hard   # L28: H2 control
 python -m evaluation.evaluate --models B3-n100 B3-n250 B3-n500 B3-n1000 P-L12-attn-h1-n100 P-L12-attn-h1-n250 \
     P-L12-attn-h1-n500 P-L12-attn-h1-n1000 --tiers easy --sets test                             # demo-count curves
 python -m evaluation.evaluate --models P-L12-last-h1 P-L12-mean-h1 --tiers easy --sets test test_dist16   # H2: pooling under clutter
@@ -41,6 +41,7 @@ parallel would inflate it.
 | random | - | seconds | seconds |
 | B3 (3 seeds) | 1.2 ms | minutes | minutes |
 | P-L12-attn-h1 (3 seeds) | 10-12 ms | about 1 h | about 2 h |
+| P-L28-attn-h1 (3 seeds, hard only) | 21 ms | - | about 4-5 h |
 | B2 | 44 ms | about 3 h | about 6 h |
 | B1 | 170 ms | about 11 h | about 26 h |
 

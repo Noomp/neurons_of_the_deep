@@ -127,6 +127,7 @@ B3 isolates the value of LLM representations: it sees the same information and d
 - Layer, pooling, and hyperparameters are selected on the validation split only; the test and shifted sets are evaluated once.
 - All LLM-based conditions share the same backbone, prompt, and episodes; all trained conditions share the same demonstrations and training protocol.
 - For H2's clutter prediction, the last-token and mean-pooling heads at the best P's layer (P-L12-last-h1, P-L12-mean-h1) are also evaluated on `test` and `test_dist16`, next to the best P.
+- For H2 on the hard tier, the final-layer attention head (P-L28-attn-h1) is also evaluated on all four test sets, next to the best P (layer 12).
 - All conditions are reported, including negative results.
 
 ### 6.6 Failure Analysis
