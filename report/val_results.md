@@ -96,7 +96,7 @@ Read-off, best of h1/h2 per cell:
 | layers for attention pooling | 12, 16, 20, plus 28 as an H2 control | tied best with fixed pooling (§2: best per layer 0.692, 0.695, 0.692) |
 | best P, both tiers | **P-L12-attn-h1** | highest easy val success (0.873); within noise of P-L20-attn-h1/h2, and the cheapest of them (12 layers, 1 hidden layer) |
 | hard tier | not swept: B3 and P-L12-attn-h1 unchanged, plus P-L12-mean-h1 (pooling check) and P-L28-attn-h1 (H2 control) | §5 |
-| learning rate | 3e-3 for P and B3 | §7 |
+| learning rate | 3e-3 for P and B3 | §8 |
 
 ## 4. Easy tier: demonstration-count curves
 
@@ -147,7 +147,52 @@ about 0.78), and its val CE is lowest at epoch 2-5 and rises after, while the ac
 an early B3. The rule is kept as agreed, for every model; P leads B3 on the hard tier under either choice
 (`training/README.md`, Limitations). The selection results (§1, §5) are the kept checkpoints.
 
-## 7. Learning-rate selection
+## 7. Each layer against the final layer (H2)
+
+Val success of each layer minus layer 28's, at the same pooling and depth, with a Welch 95% interval over the 3
+seeds (t with Welch's degrees of freedom); **bold** when the interval excludes zero. Positive = the earlier layer is
+better.
+
+| pooling | L4 | L8 | L12 | L16 | L20 | L24 |
+|---|---|---|---|---|---|---|
+| last h1 | **-0.152 [-0.19, -0.11]** | -0.068 [-0.19, +0.05] | -0.077 [-0.16, +0.01] | +0.003 [-0.14, +0.14] | -0.003 [-0.13, +0.12] | **-0.097 [-0.15, -0.05]** |
+| last h2 | **-0.152 [-0.30, -0.00]** | **-0.040 [-0.08, -0.00]** | **-0.118 [-0.17, -0.07]** | -0.018 [-0.07, +0.03] | **-0.068 [-0.12, -0.01]** | -0.075 [-0.18, +0.03] |
+| mean h1 | **-0.218 [-0.31, -0.13]** | -0.090 [-0.18, +0.00] | +0.077 [-0.04, +0.19] | +0.043 [-0.04, +0.13] | **+0.077 [+0.00, +0.15]** | +0.023 [-0.10, +0.15] |
+| mean h2 | **-0.193 [-0.22, -0.17]** | **-0.108 [-0.15, -0.06]** | **+0.108 [+0.02, +0.20]** | +0.118 [-0.08, +0.32] | +0.110 [-0.03, +0.25] | +0.065 [-0.08, +0.21] |
+| attn h1 | - | - | +0.027 [-0.00, +0.06] | +0.000 [-0.08, +0.08] | +0.020 [-0.02, +0.06] | - |
+| attn h2 | - | - | +0.023 [-0.04, +0.09] | +0.025 [-0.04, +0.09] | +0.043 [-0.02, +0.10] | - |
+| attn h1, hard tier | - | - | -0.003 [-0.07, +0.07] | - | - | - |
+
+What these support:
+
+- **Early layers are worse than the final one.** Layer 4 is below layer 28 under every pooling, layer 8 in most
+  comparisons. The most robust layer result.
+- **Whether a middle layer beats the final one depends on the pooling.** Mean pooling: layers 12-20 are above
+  layer 28 in all six comparisons (+0.04 to +0.12, about +0.09 on average), two individually significant. Last-token
+  pooling: the opposite; layer 28 is as good as or better than every other layer. Attention pooling: +0.00 to +0.04
+  on the easy tier and -0.003 on the hard tier, none significant. So H2's "intermediate layers outperform the final
+  layer" holds for mean pooling only. A reading consistent with §2: fixed pooling depends on how the LLM has mixed
+  information into each position, which changes with depth; attention picks the relevant tokens at any depth.
+- **The final layer costs twice as much for no measurable gain.** With attention, layer 28 takes 21 ms per decision
+  against 10 ms at layer 12 (all 28 layers instead of 12; RTX 5080, batch size 1, 5-episode pilot on the hard tier).
+
+What they do not support:
+
+- **A small layer effect under attention.** With 3 seeds the intervals are ±0.03 to ±0.08 wide, so a middle-layer
+  advantage of 0.02-0.05 can be neither shown nor ruled out.
+- **Precise absolute levels.** Every run is scored on the same 100 val episodes per task, so the seed spread leaves
+  out episode sampling noise (about ±0.03 at these success rates). Comparisons are less affected, since every
+  configuration faces the same episodes.
+- **Unbiased scores for the chosen layers.** Layers 12-20 were picked as best on the same val episodes, which favours
+  them slightly.
+- **Single comparisons.** 31 comparisons at 95% give one or two significant results by chance; the patterns across
+  many comparisons above are the reliable part.
+- **Attention across all depths.** Attention was not trained at layers 4, 8 and 24.
+
+The test-set evaluation of P-L28-attn-h1 next to P-L12-attn-h1 (hard tier) adds estimates independent of selection
+and the comparison on each shifted set, but with 3 seeds it will not resolve a difference of a few points either.
+
+## 8. Learning-rate selection
 
 Chosen by val CE on the easy tier, all 2000 demos per task, 3 seeds, for B3 and the best head configuration of the
 earlier lr 1e-2 sweep (appendix). Mean over seeds of the kept epoch's val CE, val success in brackets. These runs
@@ -162,7 +207,7 @@ At 1e-2 two of B3's three seeds stopped before learning `pickup`; P converged, t
 
 ## Appendix: the superseded lr 1e-2 sweep (easy tier)
 
-Not used for any result; kept because it chose the head configuration for the learning-rate check (§7). lr 1e-2,
+Not used for any result; kept because it chose the head configuration for the learning-rate check (§8). lr 1e-2,
 `lr_patience` 2, `patience` 6; otherwise as above (runs in `outputs/runs_lr1e-2`). Val success, mean ± SD over
 3 seeds.
 
