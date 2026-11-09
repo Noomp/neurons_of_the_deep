@@ -128,11 +128,12 @@ B3 isolates the value of LLM representations: it sees the same information and d
 - All LLM-based conditions share the same backbone, prompt, and episodes; all trained conditions share the same demonstrations and training protocol.
 - For H2's clutter prediction, the last-token and mean-pooling heads at the best P's layer (P-L12-last-h1, P-L12-mean-h1) are also evaluated on `test` and `test_dist16`, next to the best P.
 - For H2 on the hard tier, the final-layer attention head (P-L28-attn-h1) is also evaluated on all four test sets, next to the best P (layer 12).
+- B1 is evaluated on the hard tier on `test` only (both tasks), plus the `putnext`/`test_dist16` cell already finished: it succeeded in none of its first 1000 hard-tier episodes, never chose `pick up` there (which both hard tasks need), and matched B2 (0 on every hard-tier cell) in every episode compared, so it has no generalisation gap on that tier.
 - All conditions are reported, including negative results.
 
 ### 6.6 Failure Analysis
 
-Failed test episodes will be categorised (for example looping or oscillating between actions, getting stuck behind distractors, approaching the wrong object, picking up or dropping at the wrong time, and drifting after an early mistake). We will report per-task breakdowns, action confusion matrices, and representative trajectories rendered with the environment's visualisation tools.
+Every failed test episode of B2, B3 and the two attention heads (L12, L28) is replayed from its recorded actions and given the first category that applies: picked up a wrong object, completed only the first step (hard tier), reached the object but never picked it up, stuck in place (spinning, walking into an object, or other), never saw the goal, or wandered. A wrong pickup is further classed as the other instruction object, a look-alike (sharing a colour or type) or unrelated, against the chance of each in the same room. Drifting after an early mistake is shown as agreement with the expert at each step for failed vs successful episodes. We report per-tier and per-task breakdowns, action confusion matrices against the expert's action in the policy's own states, and representative trajectories rendered with the environment's visualisation tools ([analysis/README.md](analysis/README.md)).
 
 ## 7. Expected Contributions
 
@@ -159,7 +160,7 @@ Negative results are also informative. For example, finding that heads collapse 
 | Zero-shot baselines perform near random | Medium | Still a valid reference point; report against the random floor and B3. |
 | Behaviour cloning suffers from compounding errors | Medium | DAgger-style relabelling for every trained condition; analyse drift explicitly in the failure analysis. |
 | Validation rollouts dominate the cost: each decision runs the LLM (about 21 ms on an RTX 5080), and a failing episode runs to its 64- or 128-step limit | Medium | Validation success is measured once per run, on the selected epoch; attention pooling only at the best layers; easy tier first. |
-| The final evaluation is long: 500 episodes per task and test set, and the zero-shot baselines fail most episodes, which then run to the step limit (B1 about 170 ms per decision: about 1.5 days of GPU time over both tiers; B2 about 9 hours) | High | The evaluation is resumable cell by cell and checks every run before the first episode; easy tier first, hard tier after; nothing else runs on the GPU meanwhile, so latencies stay comparable. |
+| The final evaluation is long: 500 episodes per task and test set, and the zero-shot baselines fail most episodes, which then run to the step limit (B1 about 170 ms per decision; B2 about 9 hours) | High | The evaluation is resumable cell by cell and checks every run before the first episode; easy tier first, hard tier after; nothing else runs on the GPU meanwhile, so latencies stay comparable. B1 runs on the hard tier on `test` only (§6.5), which saves about 16 hours. |
 | Mean pooling is dominated by a few tokens with very large activations | Low | LayerNorm on the head's input; reported as a finding if mean pooling still fails. |
 | Time pressure near the deadline | High | Fixed milestones below; the layer sweep is cheap once hidden states are cached; hard tier only where time allows. |
 
@@ -213,6 +214,7 @@ The submitted version is in git history (commit `aa012f3`). The main question, r
 | 11 | **Learning-rate decay and early stopping** for every trained condition, with one shared initial learning rate chosen on validation (§6.4). | A fixed schedule (20 epochs) under-trained both the head and B3; with early stopping every model trains until validation cross-entropy stops improving. One shared value keeps the protocol identical. |
 | 12 | **The hard tier is not swept** (§6.3): it trains only B3 and the head configuration chosen on the easy tier, unchanged, plus the mean-pooling head at the same layer (P-L12-mean-h1) as a pooling check and the attention head at the final layer (P-L28-attn-h1) as the H2 control. | The sweep answers RQ2 on the easy tier; on the hard tier the question is whether the easy-tier comparison with B3 holds on longer tasks. Fixing the configuration on the easy tier also avoids re-tuning per tier. Each hard-tier head run costs about twice an easy one. |
 | 13 | Risks, compute, timeline and team roles updated (§9–12). | Measured costs and the remaining schedule. |
+| 14 | **B1 on the hard tier is evaluated on `test` only** (§6.5), stopped after `putnext` on `test` and `test_dist16`. | It succeeded in 0 of those 1000 episodes and never chose `pick up` in its 128,000 hard-tier decisions, which both hard tasks require; it matched B2 (0 on all eight hard-tier cells) in every episode compared and in 99.9% of decisions on the same states. A generalisation gap from a success of 0 carries no information, and the remaining cells would have cost about 16 hours. |
 
 ## References
 

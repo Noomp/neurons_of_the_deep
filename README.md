@@ -13,7 +13,7 @@ demonstrations ([project_proposal.md](project_proposal.md), §3).
 
 ## Layout
 
-The code is split into four sections. Each has its own README (install, run, public API, flow, design choices,
+The code is split into five sections. Each has its own README (install, run, public API, flow, design choices,
 limitations).
 
 | section | status | contents | README |
@@ -21,7 +21,8 @@ limitations).
 | `babytext/` | done | the environment: BabyAI-Text-style gridworld, eval sets and seeds, expert / random policies, rollout and evaluation, demonstration file format, visualisation, environment tools and tests | [babytext](babytext/README.md) |
 | `models/` | done | the policies: the action head on the frozen LLM (P), the zero-shot baselines B1 / B2, the symbolic agent B3, and the shared frozen-LLM wrapper | [models](models/README.md) |
 | `training/` | done | demonstration collection and statistics, hidden-state caching, one behaviour-cloning trainer for P and B3, `--set` overrides and the run plan | [training](training/README.md) |
-| `evaluation/` | done (not yet run) | the final evaluation: every condition on the test sets with every decision recorded (resumable), and the report's tables | [evaluation](evaluation/README.md) |
+| `evaluation/` | done (run) | the final evaluation: every condition on the test sets with every decision recorded (resumable), and the report's tables | [evaluation](evaluation/README.md) |
+| `analysis/` | done | failure analysis of the recorded test episodes (categories, confusion matrices, drift) and the report's result figures | [analysis](analysis/README.md) |
 
 ```
 grp_proj/
@@ -35,8 +36,9 @@ grp_proj/
 ├── models/              the policies: action_head.py (P), prompted.py (B1, B2), symbolic_agent.py (B3), frozen_lm.py
 ├── training/            datasets, hidden-state cache and training: tools/, README.md
 ├── evaluation/          final evaluation on the test sets and its tables: README.md
+├── analysis/            failure analysis and the report's result figures: README.md
 ├── tests/               model, training and evaluation tests
-├── report/              val_results.md (every training run's val results) and figures (P and B3 architecture diagrams)
+├── report/              val_results.md and test_results.md (all results), figures/ (architecture diagrams, result figures)
 └── data/, outputs/      generated demos, hidden-state caches, figures and results (gitignored)
 ```
 
@@ -46,7 +48,8 @@ Rules for using another section's code:
   starting with `_` are private.
 - Dependencies point one way: `babytext` <- `models` <- `training`, and all three may read `config`. The environment
   imports nothing from the other two, and `models` never imports `training`, so a trained model can be evaluated
-  without the training code.
+  without the training code. `evaluation` uses `babytext`, `models` and `training.common`; `analysis` uses `babytext`
+  and `evaluation` (no model). Only `analysis` imports `evaluation`, and nothing imports `analysis`.
 - Models reach the environment as policies: a callable `policy(obs) -> action index`, optionally with `reset(env)` to
   clear per-episode state, passed to `babytext.run_episode` / `babytext.evaluate`.
 
@@ -102,6 +105,7 @@ All settings live in [config.py](config.py) (importable as `config`); edit the d
 | `EVAL_SETS` | the six eval sets: seed split and how each one's levels differ from `ENV` |
 | `DATA` | demo counts per task, data, hidden-state cache and output folders |
 | `EVAL` | episodes per evaluation, the test sets of the final evaluation, warm-up decisions before timing |
+| `ANALYSIS` | conditions in the failure analysis, the "stuck" thresholds, the report's figure folder |
 | `TRAIN` | training protocol: seeds, demo-count curve, DAgger |
 | `LLM` | the frozen LLM shared by B1, B2 and P (Qwen3-0.6B, bfloat16) |
 | `HEAD` | the action head P: layer read, pooling, MLP size, and the layers swept |
@@ -143,6 +147,7 @@ python -m training.tools.collect_demos              # expert demonstrations -> d
 python -m training.tools.cache_hidden               # frozen-LLM hidden states of every demo step -> data/hidden/
 python -m training.run_plan --dry-run               # every training command
 python -m evaluation.evaluate --models random B3 P-L12-attn-h1 B2 B1 --dry-run   # final evaluation plan
+python -m analysis.failures && python -m analysis.figures   # failure analysis, then the report's figures
 python -m babytext.tools.play --task goto --eval-set test_nonce   # play by hand
 ```
 

@@ -2,7 +2,7 @@
 
 Every training run's validation results in one place, for the report. **Validation only:** these numbers chose
 the configurations (selection); the test sets are not used until the final evaluation (`evaluation/`), whose
-results go in `outputs/results/evaluation.md`.
+results are in [test_results.md](test_results.md).
 
 **Source.** The `selected` block of each run's `outputs/runs/<ID>/<tier>/seed<k>/run.json` (the epoch kept by
 lowest val cross-entropy, then val success measured once). `outputs/` is not in git, so this file is the record.

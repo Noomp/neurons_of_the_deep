@@ -4,5 +4,5 @@
 (model, tier, run, task, eval set); ``evaluation.summarise`` turns the cells
 into the report's tables; ``evaluation.record`` holds the recorded rollouts
 both use. Depends on ``babytext``, ``models`` and ``config`` (and on
-``training.common`` for the git state); nothing imports it.
+``training.common`` for the git state); only ``analysis`` imports it.
 """

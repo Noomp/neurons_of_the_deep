@@ -11,6 +11,7 @@ instance that the code reads:
 * ``EVAL_SETS``: the train / val / test sets and the three shifted test sets;
 * ``DATA``: demonstration counts and file locations;
 * ``EVAL``: evaluation sizes;
+* ``ANALYSIS``: failure analysis and report figures;
 * ``TRAIN``: the training protocol from the proposal;
 * ``SYMBOLIC``: sizes of the B3 symbolic agent;
 * ``LLM``: the frozen LLM shared by B1, B2 and the action head;
@@ -142,6 +143,24 @@ class EvalConfig:
 
 
 EVAL = EvalConfig()
+
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    """Failure analysis of the final evaluation (analysis/failures.py) and the report's figures (analysis/figures.py)."""
+
+    # Conditions whose failed test episodes are replayed and categorised (B1 behaves like B2; random is the floor).
+    models: tuple[str, ...] = ("B2", "B3", "P-L12-attn-h1", "P-L28-attn-h1")
+    # "Stuck": the agent occupied at most stuck_cells distinct cells during its last stuck_window steps.
+    stuck_window: int = 16
+    stuck_cells: int = 2
+    # Worker processes for the replays (0 = one per CPU core, at most 8).
+    workers: int = 0
+    # Figures written for the report (tracked in git, unlike outputs/).
+    figures_dir: Path = Path("report/figures")
+
+
+ANALYSIS = AnalysisConfig()
 
 
 @dataclass(frozen=True)
@@ -286,6 +305,7 @@ def as_dict() -> dict:
             "eval_sets": {name: asdict(s) for name, s in EVAL_SETS.items()},
             "data": asdict(DATA),
             "eval": asdict(EVAL),
+            "analysis": asdict(ANALYSIS),
             "train": asdict(TRAIN),
             "symbolic": asdict(SYMBOLIC),
             "llm": asdict(LLM),

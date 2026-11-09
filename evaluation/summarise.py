@@ -31,7 +31,8 @@ from babytext.constants import TASK_TIERS
 
 from .record import read_episodes
 
-__all__ = ["Interval", "load_cells", "main", "mean_interval", "tables", "wilson"]
+__all__ = ["Interval", "gap_interval", "group_runs", "load_cells", "main", "mean_interval", "success_interval", "tables",
+           "wilson"]
 
 # Two-sided 95% Student t quantiles by degrees of freedom (scipy is not a dependency).
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
@@ -81,12 +82,58 @@ def model_order(model: str) -> tuple:
     return (rank.get(model, 4 if model.startswith("P-") else 5), model, 0)
 
 
-def tables(cells: list[dict], root: Path) -> str:
-    """The markdown report of all tiers (module docstring)."""
-    by = defaultdict(dict)  # (model, tier, run) -> {(task, eval_set): cell}
+def group_runs(cells: list[dict]) -> dict[tuple[str, str], dict[str, dict]]:
+    """Cells grouped as ``{(model, tier): {run: {(task, eval_set): cell}}}`` (run: ``seed<k>`` or ``zero-shot``)."""
+    by = defaultdict(lambda: defaultdict(dict))
     for c in cells:
         i = c["identity"]
-        by[(i["model"], i["tier"], i["run"])][(i["task"], i["eval_set"])] = c
+        by[(i["model"], i["tier"])][i["run"]][(i["task"], i["eval_set"])] = c
+    return {k: dict(v) for k, v in by.items()}
+
+
+def success_interval(runs: dict[str, dict], tasks: tuple[str, ...], eval_set: str, task: str | None = None
+                     ) -> Interval | None:
+    """Success on ``eval_set`` (one ``task``, or the mean over ``tasks``) of one model's ``runs`` (``group_runs``).
+
+    Trained runs: t-interval over seeds; zero-shot: Wilson over episodes. None unless some run has every task.
+    """
+    wanted = [task] if task else list(tasks)
+    per_run = {}
+    for run, run_cells in runs.items():
+        got = [run_cells.get((t, eval_set)) for t in wanted]
+        if all(got):
+            per_run[run] = got
+    if not per_run:
+        return None
+    if "zero-shot" in per_run:
+        got = per_run["zero-shot"]
+        return wilson(sum(c["success_rate"] * c["n_episodes"] for c in got), sum(c["n_episodes"] for c in got))
+    return mean_interval([float(np.mean([c["success_rate"] for c in got])) for got in per_run.values()])
+
+
+def gap_interval(runs: dict[str, dict], tasks: tuple[str, ...], eval_set: str) -> Interval | None:
+    """Success on ``eval_set`` minus success on ``test``, paired per run (mean over ``tasks``)."""
+    diffs, zero_shot = [], None
+    for run, run_cells in runs.items():
+        shifted = [run_cells.get((t, eval_set)) for t in tasks]
+        base = [run_cells.get((t, "test")) for t in tasks]
+        if not (all(shifted) and all(base)):
+            continue
+        p1 = float(np.mean([c["success_rate"] for c in shifted]))
+        p0 = float(np.mean([c["success_rate"] for c in base]))
+        if run == "zero-shot":
+            n1, n0 = sum(c["n_episodes"] for c in shifted), sum(c["n_episodes"] for c in base)
+            half = Z95 * math.sqrt(p1 * (1 - p1) / n1 + p0 * (1 - p0) / n0)
+            zero_shot = Interval(p1 - p0, p1 - p0 - half, p1 - p0 + half, n1, "episodes")
+        diffs.append(p1 - p0)
+    if zero_shot is not None:
+        return zero_shot
+    return mean_interval(diffs) if diffs else None
+
+
+def tables(cells: list[dict], root: Path) -> str:
+    """The markdown report of all tiers (module docstring)."""
+    by = {(model, tier, run): v for (model, tier), runs in group_runs(cells).items() for run, v in runs.items()}
     out = ["# Final evaluation", "",
            "95% intervals: trained conditions over training seeds (t), zero-shot conditions over episodes (Wilson). "
            "Success of a tier is the mean over its tasks. Test sets were used for nothing else.", ""]
@@ -103,38 +150,10 @@ def tables(cells: list[dict], root: Path) -> str:
             return {k[2]: v for k, v in runs.items() if k[0] == model}
 
         def success(model, eval_set, task=None) -> Interval | None:
-            """Success of ``model`` on ``eval_set`` (one task, or the tier's mean over tasks)."""
-            wanted = [task] if task else list(tasks)
-            per_run = {}
-            for run, run_cells in model_runs(model).items():
-                got = [run_cells.get((t, eval_set)) for t in wanted]
-                if all(got):
-                    per_run[run] = got
-            if not per_run:
-                return None
-            if "zero-shot" in per_run:
-                got = per_run["zero-shot"]
-                return wilson(sum(c["success_rate"] * c["n_episodes"] for c in got), sum(c["n_episodes"] for c in got))
-            return mean_interval([float(np.mean([c["success_rate"] for c in got])) for got in per_run.values()])
+            return success_interval(model_runs(model), tasks, eval_set, task)
 
         def gap(model, eval_set) -> Interval | None:
-            """Success on ``eval_set`` minus success on ``test``, paired per run."""
-            diffs, zero_shot = [], None
-            for run, run_cells in model_runs(model).items():
-                shifted = [run_cells.get((t, eval_set)) for t in tasks]
-                base = [run_cells.get((t, "test")) for t in tasks]
-                if not (all(shifted) and all(base)):
-                    continue
-                p1 = float(np.mean([c["success_rate"] for c in shifted]))
-                p0 = float(np.mean([c["success_rate"] for c in base]))
-                if run == "zero-shot":
-                    n1, n0 = sum(c["n_episodes"] for c in shifted), sum(c["n_episodes"] for c in base)
-                    half = Z95 * math.sqrt(p1 * (1 - p1) / n1 + p0 * (1 - p0) / n0)
-                    zero_shot = Interval(p1 - p0, p1 - p0 - half, p1 - p0 + half, n1, "episodes")
-                diffs.append(p1 - p0)
-            if zero_shot is not None:
-                return zero_shot
-            return mean_interval(diffs) if diffs else None
+            return gap_interval(model_runs(model), tasks, eval_set)
 
         out += [f"## {tier} tier ({', '.join(tasks)})", "", "### Success rate", ""]
         out += ["| condition | " + " | ".join(sets) + " |", "|---" * (len(sets) + 1) + "|"]
