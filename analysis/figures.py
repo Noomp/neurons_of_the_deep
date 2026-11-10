@@ -137,29 +137,37 @@ def fig_success(groups: dict, out: Path) -> None:
 
 
 def fig_gaps(groups: dict, out: Path) -> None:
-    """Dot plot: generalisation gap with 95% interval per trained condition and shifted set."""
+    """Horizontal bars from zero: generalisation gap with 95% interval, one labelled row per trained condition,
+    grouped under a heading per shifted set (the layout of ``results_failures``), a panel per tier."""
     shifted = [s for s in config.EVAL.test_sets if s != "test"]
-    fig, axes = plt.subplots(1, 2, figsize=(WIDTH, 1.9), sharey=True, gridspec_kw={"wspace": 0.08})
+    fig, axes = plt.subplots(1, 2, figsize=(WIDTH, 3.0), sharex=True, gridspec_kw={"wspace": 0.42})
     for ax, (tier, tasks) in zip(axes, TASK_TIERS.items()):
         models = models_in(groups, tier, TRAINED)
-        for k, m in enumerate(models):
-            for j, s in enumerate(shifted):
-                iv = gap_interval(groups[(m, tier)], tasks, s)
-                if iv is None:
-                    continue
-                y = j + (k - (len(models) - 1) / 2) * 0.22
+        labels, y = [], 0
+        for s in shifted:
+            rows = [(m, gap_interval(groups[(m, tier)], tasks, s)) for m in models]
+            rows = [(m, iv) for m, iv in rows if iv is not None]
+            if not rows:
+                continue
+            # Set heading in the gap above its block of rows (left of zero, where the bars are).
+            ax.text(-0.69, y - 0.75, SET_LABELS[s], fontsize=7.5, color=INK, fontweight="bold", va="center")
+            for m, iv in rows:
                 xerr = [[iv.value - iv.low], [iv.high - iv.value]] if iv.low is not None else None  # one seed: none
-                ax.errorbar(iv.value, y, xerr=xerr, fmt="o", ms=4,
-                            color=COLOURS[m], mec=SURFACE, mew=0.8, lw=1.2, label=LABELS[m])
-        ax.axvline(0, color=INK_3, lw=0.6)
-        ax.set_yticks(range(len(shifted)), [SET_LABELS[s] for s in shifted])
+                ax.barh(y, iv.value, height=0.72, color=COLOURS[m])
+                if xerr is not None:
+                    ax.errorbar(iv.value, y, xerr=xerr, fmt="none", ecolor=INK, elinewidth=0.7)
+                labels.append((y, LABELS[m]))
+                y += 1
+            y += 1.0
+        ax.axvline(0, color=INK_3, lw=0.8)
+        ax.set_yticks([p for p, _ in labels], [t for _, t in labels], fontsize=7)
+        ax.set_ylim(y - 1.4, -1.3)  # inverted: first block on top, room for its heading
         ax.set_xlim(-0.7, 0.1)
-        ax.set_title(f"{tier} tier")
-        ax.set_xlabel("success: shifted set minus test")
+        ax.set_title(f"{tier} tier", pad=6)
+        ax.set_xlabel("change in success from test (left = drop)")
         ax.xaxis.grid(True, color=GRID, linewidth=0.6)
         ax.set_axisbelow(True)
-    axes[0].invert_yaxis()  # shared y axis: inverting once puts the first shifted set on top
-    add_legend(fig, axes, None, -0.24)
+        ax.tick_params(axis="y", length=0)
     save(fig, out, "results_gaps")
 
 
