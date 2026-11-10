@@ -9,6 +9,7 @@ state); only `analysis` imports it (the failure analysis and the report's figure
 | [`evaluate.py`](evaluate.py) | the command: plans and checks every run, then evaluates each cell; resumable |
 | [`record.py`](record.py) | recorded rollouts: one cell (a policy on one task and eval set) with every decision kept |
 | [`summarise.py`](summarise.py) | the report's tables: success with 95% intervals, generalisation gaps, cost, B1's invalid outputs, expert agreement, demo-count curves |
+| [`failures.py`](failures.py) | failure analysis (§6.6): each failed episode's category, action confusion matrices, example trajectories |
 
 ## Run
 
@@ -21,6 +22,7 @@ python -m evaluation.evaluate --models B3-n100 B3-n250 B3-n500 B3-n1000 P-L12-at
     P-L12-attn-h1-n500 P-L12-attn-h1-n1000 --tiers easy --sets test                             # demo-count curves
 python -m evaluation.evaluate --models P-L12-last-h1 P-L12-mean-h1 --tiers easy --sets test test_dist16   # H2: pooling under clutter
 python -m evaluation.summarise                                                                 # -> outputs/results/evaluation.md
+python -m evaluation.failures --models B3 P-L12-attn-h1 B2 B1                                   # -> outputs/results/failures/
 ```
 
 `--models` takes `random`, `B1`, `B2` (no training; one run each) and training run IDs (`B3`, `P-L12-attn-h1`,
